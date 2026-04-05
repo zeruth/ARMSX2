@@ -38,10 +38,11 @@
 namespace a64 = vixl::aarch64;
 
 // Pinned state registers
-#define RCPUSTATE   a64::x19
-#define RFPUSTATE   a64::x20
-#define RMEMBASE    a64::x21
-#define RRECLUT     a64::x22
+#define RCPUSTATE    a64::x19
+#define RFPUSTATE    a64::x20
+#define RMEMBASE     a64::x21
+#define RRECLUT      a64::x22
+#define RFASTMEMBASE a64::x23
 
 // Scratch GPRs for codegen (caller-saved, safe within a single instruction's codegen)
 #define RSCRATCHGPR  a64::x4
@@ -94,7 +95,8 @@ extern u32 g_cpuHasConstReg, g_cpuFlushedConstReg;
 extern GPR_reg64 g_cpuConstRegs[32];
 
 #define GPR_IS_CONST1(reg) ((g_cpuHasConstReg >> (reg)) & 1)
-#define GPR_IS_CONST2(reg1, reg2) ((g_cpuHasConstReg >> (reg1)) & (g_cpuHasConstReg >> (reg2)) & 1)
+#define GPR_IS_CONST2(reg1, reg2) \
+    (((g_cpuHasConstReg >> (reg1)) & 1) & ((g_cpuHasConstReg >> (reg2)) & 1))
 #define GPR_SET_CONST(reg)  \
 	do { \
 		if ((reg) != 0) { \
@@ -144,12 +146,66 @@ void armStoreGPR64(const a64::Register& src_x, int gpr);
 // Emit a call to an interpreter function, saving/restoring necessary state.
 void armCallInterpreter(void (*func)());
 
+// Branch-call variant for interpreter branch/syscall/trap stubs.
+// Sets nextEventCycle = cycle, calls the standard interpreter function
+// (which handles delay slot execution, cycle counting, and event testing),
+// and sets g_branch = 2.
+void armBranchCallInterpreter(void (*func)());
+
 // Emit code to flush PC to cpuRegs.pc if it hasn't been flushed yet.
 void armFlushPC();
 
 // Emit code to flush cpuRegs.code if it hasn't been flushed yet.
 void armFlushCode();
 
+// Allocate space for a backpatch thunk from the rec code buffer.
+u8* recBeginThunk();
+u8* recEndThunk();
+
+//FIXME: If you are using any interpreter ops, you should enable fast boot
+
+//EE
 // Bisect: comment out a line to enable native codegen for that file.
 // All uncommented = all interp stubs. Comment one at a time to find the bug.
 //#define INTERP_BRANCH    // BEQ, BNE, J, JAL, JR, JALR, SYSCALL, BREAK, etc.
+//#define INTERP_MOVE      // LUI, MFHI/LO, MTHI/LO, MOVZ, MOVN, MFSA, MTSA, etc.
+//#define INTERP_COP0      // MFC0, MTC0, BC0x, TLB*, ERET, EI, DI
+//#define INTERP_COP1      // MFC1, MTC1, CFC1, CTC1, BC1x, FPU arith/cmp/cvt
+//#define INTERP_ALU       // ADDU, SUBU, ADDIU, DADDU, DSUBU, DADDIU, AND/OR/XOR/NOR, SLT/U, etc.
+//#define INTERP_SHIFT     // SLL, SRL, SRA, SLLV, SRLV, SRAV, DSLL/DSRL/DSRA + 32 variants
+//#define INTERP_MMI       // All packed SIMD ops: PADD*/PSUB*, PCGT*, PMAX/MIN*, PCEQ*, PABS*, PSxx shifts, etc.
+//#define INTERP_LOAD      // LB, LBU, LH, LHU, LW, LWU, LD, LQ, LWL/R, LDL/R, LWC1, LQC2
+//#define INTERP_STORE     // SB, SH, SW, SD, SQ, SWL/R, SDL/R, SWC1, SQC2
+//#define INTERP_TRAP      // TGEI, TGEIU, TLTI, TLTIU, TEQI, TNEI, TGE, TGEU, TLT, TLTU, TEQ, TNE
+
+//VU0
+//#define INTERP_VU0            // Master switch: defined = use CpuIntVU0 (interpreter); comment out = use CpuArmVU0 (block JIT)
+
+//VU1
+// Bisect: comment out a line to enable native codegen for that group.
+// All uncommented = all interp stubs. Comment one at a time to find the bug.
+//#define INTERP_VU1            // Master switch: defined = use CpuIntVU1 (interpreter); comment out = use CpuArmVU1 (block JIT)
+//#define INTERP_VU_UPPER      // FMAC arith (ADD/SUB/MUL/MADD/MSUB xyzwqi), accum, MAX/MINI, ABS, CLIP, FTOI/ITOF, NOP
+//#define INTERP_VU_FDIV       // DIV, SQRT, RSQRT, WAITQ, WAITP
+//#define INTERP_VU_IALU       // IADD, ISUB, IADDI, IADDIU, ISUBIU, IAND, IOR
+//#define INTERP_VU_LOADSTORE  // LQ, LQD, LQI, SQ, SQD, SQI, ILW, ISW, ILWR, ISWR
+//#define INTERP_VU_BRANCH     // B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ, IBGEZ
+//#define INTERP_VU_MISC       // MOVE, MR32, MFIR, MTIR, MFP, flag ops, random, EFU, XITOP, XTOP, XGKICK
+
+//DMAC
+// Bisect: comment out to enable native codegen for DMA channels.
+//#define INTERP_DMAC          // VIF0, VIF1, GIF, IPU0/1, SIF0/1/2, SPR0/1 + interrupt handlers
+
+//IOP
+// Bisect: comment out a line to enable native codegen for that group.
+// All uncommented = all interp stubs. Comment one at a time to find bugs.
+//#define INTERP_IOP             // Master: use psxInt entirely (bypasses IOP JIT)
+#define INTERP_IOP_ALU         // BISECT: uncommented → per-instruction ISTUBs in iR3000Atables_arm64.cpp
+#define INTERP_IOP_BRANCH      // BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ/BLTZAL/BGEZAL/J/JAL/JR/JALR
+//#define INTERP_IOP_SHIFT       // SLL/SRL/SRA/SLLV/SRLV/SRAV
+//#define INTERP_IOP_MULTDIV     // MULT/MULTU/DIV/DIVU/MFHI/MTHI/MFLO/MTLO
+//#define INTERP_IOP_MOVE        // MFHI/MTHI/MFLO/MTLO
+//#define INTERP_IOP_LOADSTORE   // LB/LBU/LH/LHU/LW/LWL/LWR/SB/SH/SW/SWL/SWR
+//#define INTERP_IOP_COP0        // MFC0/MTC0/CFC0/CTC0/RFE
+#define INTERP_IOP_COP2        // All GTE (keep stubbed)
+#define INTERP_IOP_SYSTEM      // SYSCALL/BREAK

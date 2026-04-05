@@ -122,3 +122,13 @@ CMakeSettings.json
 /ci-artifacts/
 /out/
 /.cache/
+
+.gradle/
+
+app/build/
+
+app/.cxx/
+
+local.properties
+
+ARMSX2/.kotlin/

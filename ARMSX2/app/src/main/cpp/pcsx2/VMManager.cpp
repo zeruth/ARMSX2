@@ -44,6 +44,11 @@
 #include "USB/USB.h"
 #include "Vif_Dynarec.h"
 #include "VMManager.h"
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "arm64/arm64Emitter.h"
+#include "arm64/iVU0micro_arm64.h"
+#include "arm64/iVU1micro_arm64.h"
+#endif
 #include "ps2/BiosTools.h"
 
 #include "common/Console.h"
@@ -2662,10 +2667,18 @@ void VMManager::InitializeCPUProviders()
 	CpuMicroVU1.Reserve();
 #elif defined(__aarch64__) || defined(_M_ARM64)
 	recCpu.Reserve();
-	// VU and IOP still use interpreter on ARM64.
-	// Despite not having any VU recompilers on ARM64, therefore no MTVU,
-	// we still need the thread alive. Otherwise the read and write positions
-	// of the ring buffer wont match, and various systems in the emulator end up deadlocked.
+#ifndef INTERP_IOP
+	psxRec.Reserve();
+#endif
+#ifndef INTERP_VU0
+	CpuArmVU0.Reserve();
+#endif
+#ifndef INTERP_VU1
+	CpuArmVU1.Reserve();
+#endif
+	// Despite not having MTVU on ARM64, we still need the thread alive.
+	// Otherwise the read and write positions of the ring buffer wont match,
+	// and various systems in the emulator end up deadlocked.
 	vu1Thread.Open();
 #else
 	vu1Thread.Open();
@@ -2689,6 +2702,9 @@ void VMManager::ShutdownCPUProviders()
 	psxRec.Shutdown();
 	recCpu.Shutdown();
 #elif defined(__aarch64__) || defined(_M_ARM64)
+#ifndef INTERP_VU1
+	CpuArmVU1.Shutdown();
+#endif
 	recCpu.Shutdown();
 	if (vu1Thread.IsOpen())
 		vu1Thread.WaitVU();
@@ -2705,7 +2721,11 @@ void VMManager::UpdateCPUImplementations()
 		Cpu = &GSDumpReplayerCpu;
 		psxCpu = &psxInt;
 		CpuVU0 = &CpuIntVU0;
+#ifdef INTERP_VU1
 		CpuVU1 = &CpuIntVU1;
+#else
+		CpuVU1 = &CpuArmVU1;
+#endif
 		return;
 	}
 
@@ -2717,12 +2737,23 @@ void VMManager::UpdateCPUImplementations()
 	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
 #elif defined(__aarch64__) || defined(_M_ARM64)
 	// ARM64 EE recompiler with interpreter fallback stubs for unimplemented ops.
-	// IOP and VU still use interpreter for now.
-	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
+	Cpu = &recCpu;
+#ifdef INTERP_IOP
 	psxCpu = &psxInt;
+#else
+	psxCpu = &psxRec;
+#endif
 
+#ifdef INTERP_VU0
 	CpuVU0 = &CpuIntVU0;
-	CpuVU1 = &CpuIntVU1;
+#else
+	CpuVU0 = static_cast<BaseVUmicroCPU*>(&CpuArmVU0);
+#endif
+#ifdef INTERP_VU1
+	CpuVU1 = static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
+#else
+	CpuVU1 = static_cast<BaseVUmicroCPU*>(&CpuArmVU1);
+#endif
 #else
 	Cpu = &intCpu;
 	psxCpu = &psxInt;

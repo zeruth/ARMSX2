@@ -12,6 +12,7 @@ enum class AudioBackend : u8
 	Null,
 	Cubeb,
 	SDL,
+	Oboe,
 	Count
 };
 

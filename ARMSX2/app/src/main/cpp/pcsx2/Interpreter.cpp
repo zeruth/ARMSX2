@@ -11,6 +11,10 @@
 
 #include "common/FastJmp.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "arm64/intNativeOps.h"
+#endif
+
 #include <float.h>
 
 using namespace R5900;		// for OPCODE and OpcodeImpl
@@ -214,7 +218,10 @@ static void execI()
 
 	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
 
-	opcode.interpret();
+#if defined(__aarch64__) || defined(_M_ARM64)
+	if (!arm64TryNativeExec())
+#endif
+		opcode.interpret();
 }
 
 static __fi void _doBranch_shared(u32 tar)

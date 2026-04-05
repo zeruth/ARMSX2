@@ -99,8 +99,13 @@ static void recBranch_GPR64(a64::Condition cond, int rs, int rt, u32 branchTarge
 	}
 
 	armLoadGPR64(RSCRATCHGPR, rs);
-	armLoadGPR64(RSCRATCHGPR2, rt);
-	armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
+	if (rt == 0)
+		armAsm->Cmp(RSCRATCHGPR, 0);
+	else
+	{
+		armLoadGPR64(RSCRATCHGPR2, rt);
+		armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
+	}
 
 	armAsm->Cset(RDELAYSLOTGPR, cond);
 
@@ -181,8 +186,13 @@ static void recBranch_GPR64_Likely(a64::Condition cond, int rs, int rt, u32 bran
 	}
 
 	armLoadGPR64(RSCRATCHGPR, rs);
-	armLoadGPR64(RSCRATCHGPR2, rt);
-	armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
+	if (rt == 0)
+		armAsm->Cmp(RSCRATCHGPR, 0);
+	else
+	{
+		armLoadGPR64(RSCRATCHGPR2, rt);
+		armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
+	}
 
 	// If condition is NOT met, skip the delay slot and go to fallthrough
 	a64::Label skipDelaySlot, done;
@@ -233,11 +243,18 @@ static void recBranch_GPR64_vs_Zero_Likely(a64::Condition cond, int rs, u32 bran
 	}
 
 	armLoadGPR64(RSCRATCHGPR, rs);
-	armAsm->Cmp(RSCRATCHGPR, 0);
 
-	// If condition is NOT met, skip the delay slot and go to fallthrough
+	// For lt/ge, use Tbz/Tbnz to test sign bit directly (1 instruction vs 2)
 	a64::Label skipDelaySlot, done;
-	armAsm->B(&skipDelaySlot, a64::InvertCondition(cond));
+	if (cond == a64::lt)
+		armAsm->Tbz(RSCRATCHGPR, 63, &skipDelaySlot);
+	else if (cond == a64::ge)
+		armAsm->Tbnz(RSCRATCHGPR, 63, &skipDelaySlot);
+	else
+	{
+		armAsm->Cmp(RSCRATCHGPR, 0);
+		armAsm->B(&skipDelaySlot, a64::InvertCondition(cond));
+	}
 
 	// Condition met: execute delay slot, then branch to target
 	armFlushConstRegs();
@@ -255,9 +272,6 @@ static void recBranch_GPR64_vs_Zero_Likely(a64::Condition cond, int rs, u32 bran
 	armAsm->Bind(&done);
 	g_branch = 1;
 	g_cpuFlushedPC = true;
-
-	g_branch = 1;
-	g_cpuFlushedPC = true;
 }
 
 #endif // at least one native branch
@@ -272,7 +286,7 @@ namespace OpcodeImpl {
 
 // ---- BEQ ----
 #if ISTUB_BEQ
-void recBEQ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BEQ); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBEQ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BEQ); }
 #else
 void recBEQ()
 {
@@ -292,139 +306,230 @@ void recBEQ()
 
 // ---- BNE ----
 #if ISTUB_BNE
-void recBNE() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BNE); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBNE() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BNE); }
 #else
 void recBNE()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (_Rs_ == _Rt_)
+	{
+		// rs != rs is always false
+		recompileNextInstruction(true, false);
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64(a64::ne, _Rs_, _Rt_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BEQL ----
 #if ISTUB_BEQL
-void recBEQL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BEQL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBEQL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BEQL); }
 #else
 void recBEQL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (_Rs_ == _Rt_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_Likely(a64::eq, _Rs_, _Rt_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BNEL ----
 #if ISTUB_BNEL
-void recBNEL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BNEL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBNEL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BNEL); }
 #else
 void recBNEL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (_Rs_ == _Rt_)
+	{
+		// Likely: not taken → skip delay slot
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_Likely(a64::ne, _Rs_, _Rt_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGEZ ----
 #if ISTUB_BGEZ
-void recBGEZ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZ); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGEZ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZ); }
 #else
 void recBGEZ()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		// 0 >= 0 is always true
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::ge, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGTZ ----
 #if ISTUB_BGTZ
-void recBGTZ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGTZ); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGTZ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGTZ); }
 #else
 void recBGTZ()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		// 0 > 0 is always false
+		recompileNextInstruction(true, false);
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::gt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLEZ ----
 #if ISTUB_BLEZ
-void recBLEZ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLEZ); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLEZ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLEZ); }
 #else
 void recBLEZ()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		// 0 <= 0 is always true
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::le, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLTZ ----
 #if ISTUB_BLTZ
-void recBLTZ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZ); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLTZ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZ); }
 #else
 void recBLTZ()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		// 0 < 0 is always false
+		recompileNextInstruction(true, false);
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::lt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGEZL ----
 #if ISTUB_BGEZL
-void recBGEZL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGEZL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZL); }
 #else
 void recBGEZL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::ge, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGTZL ----
 #if ISTUB_BGTZL
-void recBGTZL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGTZL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGTZL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGTZL); }
 #else
 void recBGTZL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::gt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLEZL ----
 #if ISTUB_BLEZL
-void recBLEZL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLEZL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLEZL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLEZL); }
 #else
 void recBLEZL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::le, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLTZL ----
 #if ISTUB_BLTZL
-void recBLTZL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLTZL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZL); }
 #else
 void recBLTZL()
 {
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
+
+	if (!_Rs_)
+	{
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::lt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGEZAL ----
 #if ISTUB_BGEZAL
-void recBGEZAL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZAL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGEZAL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZAL); }
 #else
 void recBGEZAL()
 {
@@ -434,13 +539,20 @@ void recBGEZAL()
 	g_cpuConstRegs[31].SD[0] = (s32)(pc + 4);
 	GPR_SET_CONST(31);
 
+	if (!_Rs_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::ge, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLTZAL ----
 #if ISTUB_BLTZAL
-void recBLTZAL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZAL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLTZAL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZAL); }
 #else
 void recBLTZAL()
 {
@@ -450,13 +562,20 @@ void recBLTZAL()
 	g_cpuConstRegs[31].SD[0] = (s32)(pc + 4);
 	GPR_SET_CONST(31);
 
+	if (!_Rs_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero(a64::lt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BGEZALL ----
 #if ISTUB_BGEZALL
-void recBGEZALL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZALL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBGEZALL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BGEZALL); }
 #else
 void recBGEZALL()
 {
@@ -466,13 +585,20 @@ void recBGEZALL()
 	g_cpuConstRegs[31].SD[0] = (s32)(pc + 4);
 	GPR_SET_CONST(31);
 
+	if (!_Rs_)
+	{
+		recompileNextInstruction(true, false);
+		SetBranchImm(branchTarget);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::ge, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- BLTZALL ----
 #if ISTUB_BLTZALL
-void recBLTZALL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZALL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recBLTZALL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BLTZALL); }
 #else
 void recBLTZALL()
 {
@@ -482,13 +608,19 @@ void recBLTZALL()
 	g_cpuConstRegs[31].SD[0] = (s32)(pc + 4);
 	GPR_SET_CONST(31);
 
+	if (!_Rs_)
+	{
+		SetBranchImm(fallthrough);
+		return;
+	}
+
 	recBranch_GPR64_vs_Zero_Likely(a64::lt, _Rs_, branchTarget, fallthrough);
 }
 #endif
 
 // ---- J ----
 #if ISTUB_J
-void recJ() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::J); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recJ() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::J); }
 #else
 void recJ()
 {
@@ -500,7 +632,7 @@ void recJ()
 
 // ---- JAL ----
 #if ISTUB_JAL
-void recJAL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::JAL); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recJAL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::JAL); }
 #else
 void recJAL()
 {
@@ -516,7 +648,7 @@ void recJAL()
 
 // ---- JR ----
 #if ISTUB_JR
-void recJR() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::JR); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recJR() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::JR); }
 #else
 void recJR()
 {
@@ -535,7 +667,7 @@ void recJR()
 
 // ---- JALR ----
 #if ISTUB_JALR
-void recJALR() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::JALR); pc += 4; g_branch = 1; g_cpuFlushedPC = true; }
+void recJALR() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::JALR); }
 #else
 void recJALR()
 {
@@ -559,7 +691,7 @@ void recJALR()
 
 // ---- SYSCALL ----
 #if ISTUB_SYSCALL
-void recSYSCALL() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::SYSCALL); g_branch = 2; g_cpuFlushedPC = true; }
+void recSYSCALL() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::SYSCALL); }
 #else
 void recSYSCALL()
 {
@@ -581,7 +713,7 @@ void recSYSCALL()
 
 // ---- BREAK ----
 #if ISTUB_BREAK
-void recBREAK() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::BREAK); g_branch = 2; g_cpuFlushedPC = true; }
+void recBREAK() { armBranchCallInterpreter(R5900::Interpreter::OpcodeImpl::BREAK); }
 #else
 void recBREAK()
 {

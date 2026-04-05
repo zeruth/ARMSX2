@@ -15,6 +15,7 @@
 
 #include "Hardware.h"
 #include "IPU/IPUdma.h"
+#include "arm64/iDMAC_arm64.h"
 
 #include "Elfheader.h"
 #include "CDVD/CDVD.h"
@@ -273,8 +274,8 @@ static __fi bool _cpuTestInterrupts()
 		/* These are 'pcsx2 interrupts', they handle asynchronous stuff
 		   that depends on the cycle timings */
 		TESTINT(VU_MTVU_BUSY, MTVUInterrupt);
-		TESTINT(DMAC_VIF1, vif1Interrupt);
-		TESTINT(DMAC_GIF, gifInterrupt);
+		TESTINT(DMAC_VIF1, recDMACInterrupt_VIF1);
+		TESTINT(DMAC_GIF, recDMACInterrupt_GIF);
 		TESTINT(DMAC_SIF0, EEsif0Interrupt);
 		TESTINT(DMAC_SIF1, EEsif1Interrupt);
 		// Profile-guided Optimization (sorta)
@@ -285,14 +286,14 @@ static __fi bool _cpuTestInterrupts()
 			| (1 << DMAC_FROM_SPR) | (1 << DMAC_TO_SPR) | (1 << DMAC_MFIFO_VIF) | (1 << DMAC_MFIFO_GIF)
 			| (1 << VIF_VU0_FINISH) | (1 << VIF_VU1_FINISH) | (1 << IPU_PROCESS)))
 		{
-			TESTINT(DMAC_VIF0, vif0Interrupt);
+			TESTINT(DMAC_VIF0, recDMACInterrupt_VIF0);
 
-			TESTINT(DMAC_FROM_IPU, ipu0Interrupt);
-			TESTINT(DMAC_TO_IPU, ipu1Interrupt);
+			TESTINT(DMAC_FROM_IPU, recDMACInterrupt_IPU0);
+			TESTINT(DMAC_TO_IPU, recDMACInterrupt_IPU1);
 			TESTINT(IPU_PROCESS, ipuCMDProcess);
 
-			TESTINT(DMAC_FROM_SPR, SPRFROMinterrupt);
-			TESTINT(DMAC_TO_SPR, SPRTOinterrupt);
+			TESTINT(DMAC_FROM_SPR, recDMACInterrupt_SPR0);
+			TESTINT(DMAC_TO_SPR, recDMACInterrupt_SPR1);
 
 			TESTINT(DMAC_MFIFO_VIF, vifMFIFOInterrupt);
 			TESTINT(DMAC_MFIFO_GIF, gifMFIFOInterrupt);

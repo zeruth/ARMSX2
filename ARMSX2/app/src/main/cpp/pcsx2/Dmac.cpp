@@ -7,6 +7,7 @@
 
 #include "IPU/IPUdma.h"
 #include "ps2/HwInternal.h"
+#include "arm64/iDMAC_arm64.h"
 
 bool DMACh::transfer(const char *s, tDMA_TAG* ptag)
 {
@@ -198,16 +199,16 @@ static u32 oldvalue = 0;
 
 static void StartQueuedDMA()
 {
-	if (QueuedDMA.VIF0) { DMA_LOG("Resuming DMA for VIF0"); QueuedDMA.VIF0 = !QuickDmaExec(dmaVIF0, D0_CHCR); }
-	if (QueuedDMA.VIF1) { DMA_LOG("Resuming DMA for VIF1"); QueuedDMA.VIF1 = !QuickDmaExec(dmaVIF1, D1_CHCR); }
-	if (QueuedDMA.GIF ) { DMA_LOG("Resuming DMA for GIF" ); QueuedDMA.GIF  = !QuickDmaExec(dmaGIF , D2_CHCR); }
-	if (QueuedDMA.IPU0) { DMA_LOG("Resuming DMA for IPU0"); QueuedDMA.IPU0 = !QuickDmaExec(dmaIPU0, D3_CHCR); }
-	if (QueuedDMA.IPU1) { DMA_LOG("Resuming DMA for IPU1"); QueuedDMA.IPU1 = !QuickDmaExec(dmaIPU1, D4_CHCR); }
-	if (QueuedDMA.SIF0) { DMA_LOG("Resuming DMA for SIF0"); QueuedDMA.SIF0 = !QuickDmaExec(dmaSIF0, D5_CHCR); }
-	if (QueuedDMA.SIF1) { DMA_LOG("Resuming DMA for SIF1"); QueuedDMA.SIF1 = !QuickDmaExec(dmaSIF1, D6_CHCR); }
-	if (QueuedDMA.SIF2) { DMA_LOG("Resuming DMA for SIF2"); QueuedDMA.SIF2 = !QuickDmaExec(dmaSIF2, D7_CHCR); }
-	if (QueuedDMA.SPR0) { DMA_LOG("Resuming DMA for SPR0"); QueuedDMA.SPR0 = !QuickDmaExec(dmaSPR0, D8_CHCR); }
-	if (QueuedDMA.SPR1) { DMA_LOG("Resuming DMA for SPR1"); QueuedDMA.SPR1 = !QuickDmaExec(dmaSPR1, D9_CHCR); }
+	if (QueuedDMA.VIF0) { DMA_LOG("Resuming DMA for VIF0"); QueuedDMA.VIF0 = !QuickDmaExec(recDMAC_VIF0, D0_CHCR); }
+	if (QueuedDMA.VIF1) { DMA_LOG("Resuming DMA for VIF1"); QueuedDMA.VIF1 = !QuickDmaExec(recDMAC_VIF1, D1_CHCR); }
+	if (QueuedDMA.GIF ) { DMA_LOG("Resuming DMA for GIF" ); QueuedDMA.GIF  = !QuickDmaExec(recDMAC_GIF , D2_CHCR); }
+	if (QueuedDMA.IPU0) { DMA_LOG("Resuming DMA for IPU0"); QueuedDMA.IPU0 = !QuickDmaExec(recDMAC_IPU0, D3_CHCR); }
+	if (QueuedDMA.IPU1) { DMA_LOG("Resuming DMA for IPU1"); QueuedDMA.IPU1 = !QuickDmaExec(recDMAC_IPU1, D4_CHCR); }
+	if (QueuedDMA.SIF0) { DMA_LOG("Resuming DMA for SIF0"); QueuedDMA.SIF0 = !QuickDmaExec(recDMAC_SIF0, D5_CHCR); }
+	if (QueuedDMA.SIF1) { DMA_LOG("Resuming DMA for SIF1"); QueuedDMA.SIF1 = !QuickDmaExec(recDMAC_SIF1, D6_CHCR); }
+	if (QueuedDMA.SIF2) { DMA_LOG("Resuming DMA for SIF2"); QueuedDMA.SIF2 = !QuickDmaExec(recDMAC_SIF2, D7_CHCR); }
+	if (QueuedDMA.SPR0) { DMA_LOG("Resuming DMA for SPR0"); QueuedDMA.SPR0 = !QuickDmaExec(recDMAC_SPR0, D8_CHCR); }
+	if (QueuedDMA.SPR1) { DMA_LOG("Resuming DMA for SPR1"); QueuedDMA.SPR1 = !QuickDmaExec(recDMAC_SPR1, D9_CHCR); }
 }
 
 static __ri void DmaExec( void (*func)(), u32 mem, u32 value )
@@ -319,7 +320,7 @@ __fi bool dmacWrite32( u32 mem, mem32_t& value )
 				switch ((mem >> 8) & 0xFF)
 				{
 					case 0x80: // VIF0
-						vif0Interrupt();
+						recDMACInterrupt_VIF0();
 						cpuRegs.interrupt &= ~(1 << DMAC_VIF0);
 						break;
 					case 0x90: // VIF1
@@ -329,11 +330,11 @@ __fi bool dmacWrite32( u32 mem, mem32_t& value )
 							vif1VUFinish();
 						}
 						else
-							vif1Interrupt();
+							recDMACInterrupt_VIF1();
 						cpuRegs.interrupt &= ~(1 << DMAC_VIF1);
 						break;
 					case 0xA0: // GIF
-						gifInterrupt();
+						recDMACInterrupt_GIF();
 						cpuRegs.interrupt &= ~(1 << DMAC_GIF);
 						break;
 					case 0xB0: // IPUFROM
@@ -345,11 +346,11 @@ __fi bool dmacWrite32( u32 mem, mem32_t& value )
 							return false;
 						break;
 					case 0xD0: // SPRFROM
-						SPRFROMinterrupt();
+						recDMACInterrupt_SPR0();
 						cpuRegs.interrupt &= ~(1 << DMAC_FROM_SPR);
 						break;
 					case 0xD4: // SPRTO
-						SPRTOinterrupt();
+						recDMACInterrupt_SPR1();
 						cpuRegs.interrupt &= ~(1 << DMAC_TO_SPR);
 						break;
 					default:
@@ -380,70 +381,70 @@ __fi bool dmacWrite32( u32 mem, mem32_t& value )
 		case (D0_CHCR): // dma0 - vif0
 		{
 			DMA_LOG("VIF0dma EXECUTE, value=0x%x", value);
-			DmaExec(dmaVIF0, mem, value);
+			DmaExec(recDMAC_VIF0, mem, value);
 			return false;
 		}
 
 		case (D1_CHCR): // dma1 - vif1 - chcr
 		{
 			DMA_LOG("VIF1dma EXECUTE, value=0x%x", value);
-			DmaExec(dmaVIF1, mem, value);
+			DmaExec(recDMAC_VIF1, mem, value);
 			return false;
 		}
 
 		case (D2_CHCR): // dma2 - gif
 		{
 			DMA_LOG("GIFdma EXECUTE, value=0x%x", value);
-			DmaExec(dmaGIF, mem, value);
+			DmaExec(recDMAC_GIF, mem, value);
 			return false;
 		}
 
 		case (D3_CHCR): // dma3 - fromIPU
 		{
 			DMA_LOG("IPU0dma EXECUTE, value=0x%x\n", value);
-			DmaExec(dmaIPU0, mem, value);
+			DmaExec(recDMAC_IPU0, mem, value);
 			return false;
 		}
 
 		case (D4_CHCR): // dma4 - toIPU
 		{
 			DMA_LOG("IPU1dma EXECUTE, value=0x%x\n", value);
-			DmaExec(dmaIPU1, mem, value);
+			DmaExec(recDMAC_IPU1, mem, value);
 			return false;
 		}
 
 		case (D5_CHCR): // dma5 - sif0
 		{
 			DMA_LOG("SIF0dma EXECUTE, value=0x%x", value);
-			DmaExec(dmaSIF0, mem, value);
+			DmaExec(recDMAC_SIF0, mem, value);
 			return false;
 		}
 
 		case (D6_CHCR): // dma6 - sif1
 		{
 			DMA_LOG("SIF1dma EXECUTE, value=0x%x", value);
-			DmaExec(dmaSIF1, mem, value);
+			DmaExec(recDMAC_SIF1, mem, value);
 			return false;
 		}
 
 		case (D7_CHCR): // dma7 - sif2
 		{
 			DMA_LOG("SIF2dma EXECUTE, value=0x%x", value);
-			DmaExec(dmaSIF2, mem, value);
+			DmaExec(recDMAC_SIF2, mem, value);
 			return false;
 		}
 
 		case (D8_CHCR): // dma8 - fromSPR
 		{
 			DMA_LOG("SPR0dma EXECUTE (fromSPR), value=0x%x", value);
-			DmaExec(dmaSPR0, mem, value);
+			DmaExec(recDMAC_SPR0, mem, value);
 			return false;
 		}
 
 		case (D9_CHCR): // dma9 - toSPR
 		{
 			DMA_LOG("SPR1dma EXECUTE (toSPR), value=0x%x", value);
-			DmaExec(dmaSPR1, mem, value);
+			DmaExec(recDMAC_SPR1, mem, value);
 			return false;
 		}
 

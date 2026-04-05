@@ -119,8 +119,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         si.SetBoolValue("InputSources", "SDL", true);
         si.SetBoolValue("InputSources", "XInput", false);
 
-        // we don't need any sound output
-        si.SetStringValue("SPU2/Output", "OutputModule", "nullout");
+        si.SetStringValue("SPU2/Output", "Backend", "Oboe");
+        si.SetBoolValue("EmuCore", "EnableFastBoot", false);
 
         // none of the bindings are going to resolve to anything
         Pad::ClearPortBindings(si, 0);

@@ -1239,6 +1239,11 @@ static void trap(u16 code=0)
 	cpuRegs.pc -= 4;
 	Console.Warning("Trap exception at 0x%08x", cpuRegs.pc);
 	cpuException(0x34, cpuRegs.branch);
+	// cpuException changed cpuRegs.pc to the exception handler vector.
+	// We must abort the current instruction so the JIT doesn't continue
+	// executing the rest of the block with the wrong PC.
+	// For the interpreter, this longjmps back to the for(;;) loop.
+	Cpu->CancelInstruction();
 }
 
 /*********************************************************

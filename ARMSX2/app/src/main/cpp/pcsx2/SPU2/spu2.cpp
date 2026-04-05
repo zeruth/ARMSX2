@@ -31,7 +31,7 @@ static bool s_psxmode = false;
 static bool s_output_muted = false;
 
 static std::unique_ptr<AudioStream> s_output_stream;
-static std::array<float, AudioStream::CHUNK_SIZE * 2> s_current_chunk;
+static std::array<AudioStream::SampleType, AudioStream::CHUNK_SIZE * 2> s_current_chunk;
 static u32 s_current_chunk_pos;
 static u32 s_standard_volume = 0;
 static u32 s_fast_forward_volume = 0;

@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PASX2-2"
+rootProject.name = "ARMSX2"
 include(":app")
  

@@ -279,3 +279,6 @@ extern void mfifoGIFtransfer();
 extern void gifMFIFOInterrupt();
 extern void clearFIFOstuff(bool full);
 extern void gifCheckPathStatus(bool calledFromGIF);
+extern void GifDMAInt(int cycles);
+extern bool CheckPaths();
+extern void CalculateFIFOCSR();

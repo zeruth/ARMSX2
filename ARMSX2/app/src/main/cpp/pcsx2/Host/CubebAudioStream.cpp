@@ -278,7 +278,7 @@ void CubebAudioStream::StateCallback(cubeb_stream* stream, void* user_ptr, cubeb
 long CubebAudioStream::DataCallback(cubeb_stream* stm, void* user_ptr, const void* input_buffer, void* output_buffer,
 	long nframes)
 {
-	static_cast<CubebAudioStream*>(user_ptr)->ReadFrames(static_cast<float*>(output_buffer), static_cast<u32>(nframes));
+	static_cast<CubebAudioStream*>(user_ptr)->ReadFrames(static_cast<SampleType*>(output_buffer), static_cast<u32>(nframes));
 	return nframes;
 }
 

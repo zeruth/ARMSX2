@@ -831,7 +831,8 @@ set(pcsx2DebugToolsHeaders
 set(pcsx2HostSources
 	Host/AudioStream.cpp
 	Host/CubebAudioStream.cpp
-	Host/SDLAudioStream.cpp)
+	Host/SDLAudioStream.cpp
+	Host/OboeAudioStream.cpp)
 
 set(pcsx2HostHeaders
 	Host/AudioStream.h
@@ -1055,15 +1056,39 @@ set(pcsx2arm64Sources
 	arm64/Vif_Dynarec.cpp
 	arm64/Vif_UnpackNEON.cpp
 	arm64/RecStubs.cpp
+	arm64/recVTLB_arm64.cpp
 	arm64/iR5900_arm64.cpp
 	arm64/iR5900Branch_arm64.cpp
+	arm64/iR5900Move_arm64.cpp
+	arm64/iR5900ALU_arm64.cpp
+	arm64/iR5900Shift_arm64.cpp
+	arm64/iR5900COP0_arm64.cpp
+	arm64/iR5900COP1_arm64.cpp
+	arm64/iR5900MMI_arm64.cpp
+	arm64/iR5900LoadStore_arm64.cpp
+	arm64/iR5900Trap_arm64.cpp
 	arm64/iR5900Stubs_arm64.cpp
+	arm64/intNativeOps.cpp
+	arm64/iVU0micro_arm64.cpp
+	arm64/iVU0Upper_arm64.cpp
+	arm64/iVU0Lower_arm64.cpp
+	arm64/iVU1micro_arm64.cpp
+	arm64/iVU1Upper_arm64.cpp
+	arm64/iVU1Lower_arm64.cpp
+	arm64/iDMAC_arm64.cpp
+	arm64/iR3000A_arm64.cpp
+	arm64/iR3000Atables_arm64.cpp
 	x86/BaseblockEx.cpp
 	)
 
 set(pcsx2arm64Headers
 	arm64/AsmHelpers.h
 	arm64/arm64Emitter.h
+	arm64/intNativeOps.h
+	arm64/iVU0micro_arm64.h
+	arm64/iVU1micro_arm64.h
+	arm64/iDMAC_arm64.h
+	arm64/iR3000A_arm64.h
 )
 
 # These ones benefit a lot from LTO
@@ -1136,6 +1161,12 @@ if(ANDROID)
 	target_sources(PCSX2 PRIVATE
 		Android/AndroidStubs.cpp
 		Android/AndroidPcapStubs.cpp
+	)
+	find_library(log-lib log)
+	target_link_libraries(PCSX2_FLAGS INTERFACE
+		oboe
+		android
+		${log-lib}
 	)
 endif()
 

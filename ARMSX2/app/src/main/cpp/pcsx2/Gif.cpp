@@ -13,7 +13,7 @@
 alignas(16) GIF_Fifo gif_fifo;
 alignas(16) gifStruct gif;
 
-static __fi void GifDMAInt(int cycles)
+__fi void GifDMAInt(int cycles)
 {
 	if (dmacRegs.ctrl.MFD == MFD_GIF)
 	{
@@ -33,7 +33,7 @@ __fi void clearFIFOstuff(bool full)
 }
 
 //I suspect this is GS side which should really be handled by GS which also doesn't current have a fifo, but we can guess from our fifo
-static __fi void CalculateFIFOCSR()
+__fi void CalculateFIFOCSR()
 {
 	if (gifRegs.stat.FQC >= 15)
 	{
