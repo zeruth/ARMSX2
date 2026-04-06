@@ -199,6 +199,19 @@ void iopArmBranchCallInterpreter(void (*func)())
 	armEmitCall((const void*)func);
 	g_psxHasConstReg = g_psxFlushedConstReg = 1;
 	psxbranch = 2;
+
+	// The interpreter's branch path (psxJ/psxBEQ/...) calls doBranch() which
+	// internally runs execI() for the delay slot — that consumes one extra IOP
+	// cycle that the JIT block epilogue does not see (s_psxBlockCycles only
+	// counts the branch instruction itself). Without compensation, iopCycleEE
+	// is undercharged by 8 per stubbed branch, the IOP runs hot relative to
+	// the EE, and IOP-side timing (SPU, counters) drifts faster than real.
+	// psxRegs.cycle is already correct: interpreter execI bumps it by 1 for
+	// the delay slot, and the JIT epilogue bumps it by 1 for the branch.
+	// Only iopCycleEE needs the missing 8.
+	armAsm->Ldr(w1, MemOperand(RPSXSTATE, PSX_IOPCYCLEEE_OFFSET));
+	armAsm->Sub(w1, w1, 8);
+	armAsm->Str(w1, MemOperand(RPSXSTATE, PSX_IOPCYCLEEE_OFFSET));
 }
 
 // ============================================================================
