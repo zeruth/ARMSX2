@@ -141,6 +141,8 @@ private:
 
 	std::unique_ptr<GLContext> m_gl_context;
 
+	bool m_is_gles = false;
+
 	struct
 	{
 		bool buggy_pbo              : 1; ///< Avoid PBOs and just use glTextureSubImage2D with immediate data

@@ -900,6 +900,7 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 {
 	pxAssertRel(!s_fh, "Has no file mapping");
 
+	const char* file_name = "/GS.mem";
 	s_fh = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, size, nullptr);
 	if (s_fh == NULL)
 	{
@@ -967,6 +968,7 @@ void GSFreeWrappedMemory(void* ptr, size_t size, size_t repeat)
 #include <unistd.h>
 #if defined(__ANDROID__)
 #include <sys/syscall.h>
+#include <android/sharedmem.h>
 #endif
 
 static int s_shm_fd = -1;
@@ -975,6 +977,7 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 {
 	pxAssert(s_shm_fd == -1);
 
+	const char* file_name = "/GS.mem";
 #if defined(__ANDROID__)
 	s_shm_fd = static_cast<int>(syscall(__NR_memfd_create, "GS.mem", 0));
 	if (s_shm_fd == -1)
@@ -983,7 +986,6 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 		return nullptr;
 	}
 #else
-	const char* file_name = "/GS.mem";
 	s_shm_fd = shm_open(file_name, O_RDWR | O_CREAT | O_EXCL, 0600);
 	if (s_shm_fd != -1)
 	{
@@ -995,12 +997,11 @@ void* GSAllocateWrappedMemory(size_t size, size_t repeat)
 		return nullptr;
 	}
 #endif
-
 	if (ftruncate(s_shm_fd, repeat * size) < 0)
 		fprintf(stderr, "Failed to reserve memory due to %s\n", strerror(errno));
 
 	void* fifo = mmap(nullptr, size * repeat, PROT_READ | PROT_WRITE, MAP_SHARED, s_shm_fd, 0);
-
+#endif
 	for (size_t i = 1; i < repeat; i++)
 	{
 		void* base = (u8*)fifo + size * i;
@@ -1024,8 +1025,6 @@ void GSFreeWrappedMemory(void* ptr, size_t size, size_t repeat)
 	close(s_shm_fd);
 	s_shm_fd = -1;
 }
-
-#endif
 
 std::pair<u8, u8> GSGetRGBA8AlphaMinMax(const void* data, u32 width, u32 height, u32 stride)
 {

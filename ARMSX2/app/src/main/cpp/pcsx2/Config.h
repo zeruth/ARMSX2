@@ -715,7 +715,7 @@ struct Pcsx2Config
 		static constexpr float DEFAULT_FRAME_RATE_PAL = 50.00f;
 
 #if defined(__ANDROID__)
-		static constexpr GSRendererType DEFAULT_HW_RENDERER = GSRendererType::SW;
+		static constexpr GSRendererType DEFAULT_HW_RENDERER = GSRendererType::Auto;
 #else
 		static constexpr GSRendererType DEFAULT_HW_RENDERER = GSRendererType::Auto;
 #endif

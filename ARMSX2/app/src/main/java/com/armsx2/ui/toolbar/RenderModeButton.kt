@@ -21,14 +21,13 @@ class RenderModeButton : ToolbarButton() {
                 renderMode = RenderMode.VULKAN_SW
                 Main.renderSoftware()
             }
-            //TODO: Cycle ALL renderers
             RenderMode.VULKAN_SW -> {
                 renderMode = RenderMode.OPENGL
                 Main.renderOpenGL()
             }
             RenderMode.OPENGL -> {
-                renderMode = RenderMode.VULKAN_SW
-                Main.renderSoftware()
+                renderMode = RenderMode.VULKAN_HW
+                Main.renderVulkan()
             }
         }
     }
