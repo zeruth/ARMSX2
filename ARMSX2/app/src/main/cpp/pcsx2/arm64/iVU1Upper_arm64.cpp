@@ -179,6 +179,36 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 	emitFmacWriteback(dst_off, xyzw);
 }
 
+// --- MAX/MINI: dst = fmaxnm/fminnm(VF[fs], src2) ---
+// ARM64 FMAXNM/FMINNM: returns the non-NaN operand when one is NaN,
+// matching PS2 VU MAX/MINI semantics (no invalid-operation exceptions).
+static void emitMaxFmac(bool isMini, u32 fs, int64_t dst_off, u32 xyzw)
+{
+	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+	// v1 must already be loaded with src2
+	if (CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1))
+	{
+		emitVuClampSetup();
+		emitVuClampVec(v0.V4S());
+		emitVuClampVec(v1.V4S());
+	}
+	if (isMini)
+		armAsm->Fminnm(v5.V4S(), v0.V4S(), v1.V4S());
+	else
+		armAsm->Fmaxnm(v5.V4S(), v0.V4S(), v1.V4S());
+	emitFmacWriteback(dst_off, xyzw);
+}
+
+// --- ABS: dst = fabs(VF[fs]) ---
+// Absolute value doesn't need a second operand or clamp on input
+// (the result is non-negative and bounded by the clamped input magnitude).
+static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
+{
+	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+	armAsm->Fabs(v5.V4S(), v0.V4S());
+	emitFmacWriteback(dst_off, xyzw);
+}
+
 // ============================================================================
 //  Macro: generate a binary FMAC rec function (ADD/SUB/MUL variants)
 //
@@ -278,6 +308,47 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 		armAsm->Ldr(q1, MemOperand(VU1_BASE_REG, vfOff(ft))); \
 		int64_t dst = (toACC) ? accOff() : vfOff(fd); \
 		emitTernaryFmac(isSub, fs, dst, xyzw); \
+	}
+
+// ============================================================================
+//  Macro: generate MAX/MINI FMAC rec function
+// ============================================================================
+
+#define FMAC_MAXMINI_BC(name, isMini, comp) \
+	void recVU1_##name() { \
+		const u32 fd = (VU1.code >> 6) & 0x1F; \
+		const u32 fs = (VU1.code >> 11) & 0x1F; \
+		const u32 ft = (VU1.code >> 16) & 0x1F; \
+		const u32 xyzw = (VU1.code >> 21) & 0xF; \
+		emitLoadBroadcast(ft, comp); \
+		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+	}
+
+#define FMAC_MAXMINI_I(name, isMini) \
+	void recVU1_##name() { \
+		const u32 fd = (VU1.code >> 6) & 0x1F; \
+		const u32 fs = (VU1.code >> 11) & 0x1F; \
+		const u32 xyzw = (VU1.code >> 21) & 0xF; \
+		emitLoadQI(viOff(REG_I)); \
+		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+	}
+
+#define FMAC_MAXMINI_FULL(name, isMini) \
+	void recVU1_##name() { \
+		const u32 fd = (VU1.code >> 6) & 0x1F; \
+		const u32 fs = (VU1.code >> 11) & 0x1F; \
+		const u32 ft = (VU1.code >> 16) & 0x1F; \
+		const u32 xyzw = (VU1.code >> 21) & 0xF; \
+		armAsm->Ldr(q1, MemOperand(VU1_BASE_REG, vfOff(ft))); \
+		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+	}
+
+// ABS: Ft.xyzw = |Ft.xyzw|  (ft is both source and destination)
+#define FMAC_ABS(name) \
+	void recVU1_##name() { \
+		const u32 ft = (VU1.code >> 16) & 0x1F; \
+		const u32 xyzw = (VU1.code >> 21) & 0xF; \
+		emitAbsFmac(ft, vfOff(ft), xyzw); \
 	}
 
 // ============================================================================
@@ -968,73 +1039,73 @@ FMAC_TERNARY_FULL(MSUBA, true, true)
 #if ISTUB_VU_MAXx
 REC_VU1_UPPER_INTERP(MAXx)
 #else
-void recVU1_MAXx() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MAXx, false, 0)
 #endif
 
 #if ISTUB_VU_MAXy
 REC_VU1_UPPER_INTERP(MAXy)
 #else
-void recVU1_MAXy() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MAXy, false, 1)
 #endif
 
 #if ISTUB_VU_MAXz
 REC_VU1_UPPER_INTERP(MAXz)
 #else
-void recVU1_MAXz() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MAXz, false, 2)
 #endif
 
 #if ISTUB_VU_MAXw
 REC_VU1_UPPER_INTERP(MAXw)
 #else
-void recVU1_MAXw() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MAXw, false, 3)
 #endif
 
 #if ISTUB_VU_MAXi
 REC_VU1_UPPER_INTERP(MAXi)
 #else
-void recVU1_MAXi() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_I(MAXi, false)
 #endif
 
 #if ISTUB_VU_MAX
 REC_VU1_UPPER_INTERP(MAX)
 #else
-void recVU1_MAX() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_FULL(MAX, false)
 #endif
 
 #if ISTUB_VU_MINIx
 REC_VU1_UPPER_INTERP(MINIx)
 #else
-void recVU1_MINIx() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MINIx, true, 0)
 #endif
 
 #if ISTUB_VU_MINIy
 REC_VU1_UPPER_INTERP(MINIy)
 #else
-void recVU1_MINIy() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MINIy, true, 1)
 #endif
 
 #if ISTUB_VU_MINIz
 REC_VU1_UPPER_INTERP(MINIz)
 #else
-void recVU1_MINIz() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MINIz, true, 2)
 #endif
 
 #if ISTUB_VU_MINIw
 REC_VU1_UPPER_INTERP(MINIw)
 #else
-void recVU1_MINIw() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_BC(MINIw, true, 3)
 #endif
 
 #if ISTUB_VU_MINIi
 REC_VU1_UPPER_INTERP(MINIi)
 #else
-void recVU1_MINIi() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_I(MINIi, true)
 #endif
 
 #if ISTUB_VU_MINI
 REC_VU1_UPPER_INTERP(MINI)
 #else
-void recVU1_MINI() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_MAXMINI_FULL(MINI, true)
 #endif
 
 // ============================================================================
@@ -1044,7 +1115,7 @@ void recVU1_MINI() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[
 #if ISTUB_VU_ABS
 REC_VU1_UPPER_INTERP(ABS)
 #else
-void recVU1_ABS() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+FMAC_ABS(ABS)
 #endif
 
 #if ISTUB_VU_CLIP
@@ -1068,7 +1139,7 @@ void recVU1_OPMSUB() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCOD
 #if ISTUB_VU_NOP
 REC_VU1_UPPER_INTERP(NOP)
 #else
-void recVU1_NOP() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_NOP() { } // VU NOP: nothing to emit
 #endif
 
 // ============================================================================
@@ -1124,14 +1195,58 @@ void recVU1_ITOF15() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCOD
 #endif
 
 // ============================================================================
-//  Generic emitter for opcode indices that dispatch through the FD sub-table
-//  (0x3C-0x3F) or the unknown/reserved slots (0x30-0x3B).
-//  VU1.code is already set to the current instruction word, so
-//  VU1_UPPER_OPCODE[VU1.code & 0x3f] resolves the correct entry.
+//  FD sub-table dispatch (0x3C-0x3F).
+//
+//  VU1.code is set at JIT compile time before this is called. We resolve the
+//  exact rec function using (VU1.code & 3) as the sub-type and
+//  (VU1.code >> 6) & 0x1F as the index within that sub-table.
+//  This calls the already-implemented recVU1_* emitters directly so all their
+//  ISTUB guards and NEON paths apply normally.
+//
+//  Unknown/reserved slots (indices >= 12) and 0x30-0x3B fall back to the
+//  interpreter via VU1_UPPER_OPCODE.
 // ============================================================================
 static void recVU1_Upper_FD()
 {
-	armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f]));
+	using FDFn = void (*)();
+	const u32 fd_type = VU1.code & 3;
+	const u32 idx = (VU1.code >> 6) & 0x1F;
+
+	// clang-format off
+	static const FDFn fd_00[] = { // 0x3C
+		recVU1_ADDAx,  recVU1_SUBAx,  recVU1_MADDAx, recVU1_MSUBAx,
+		recVU1_ITOF0,  recVU1_FTOI0,  recVU1_MULAx,  recVU1_MULAq,
+		recVU1_ADDAq,  recVU1_SUBAq,  recVU1_ADDA,   recVU1_SUBA,
+	};
+	static const FDFn fd_01[] = { // 0x3D
+		recVU1_ADDAy,  recVU1_SUBAy,  recVU1_MADDAy, recVU1_MSUBAy,
+		recVU1_ITOF4,  recVU1_FTOI4,  recVU1_MULAy,  recVU1_ABS,
+		recVU1_MADDAq, recVU1_MSUBAq, recVU1_MADDA,  recVU1_MSUBA,
+	};
+	static const FDFn fd_10[] = { // 0x3E
+		recVU1_ADDAz,  recVU1_SUBAz,  recVU1_MADDAz, recVU1_MSUBAz,
+		recVU1_ITOF12, recVU1_FTOI12, recVU1_MULAz,  recVU1_MULAi,
+		recVU1_ADDAi,  recVU1_SUBAi,  recVU1_MULA,   recVU1_OPMULA,
+	};
+	static const FDFn fd_11[] = { // 0x3F
+		recVU1_ADDAw,  recVU1_SUBAw,  recVU1_MADDAw, recVU1_MSUBAw,
+		recVU1_ITOF15, recVU1_FTOI15, recVU1_MULAw,  recVU1_CLIP,
+		recVU1_MADDAi, recVU1_MSUBAi, nullptr,       recVU1_NOP,
+	};
+	// clang-format on
+
+	const FDFn* table;
+	switch (fd_type) {
+		case 0:  table = fd_00; break;
+		case 1:  table = fd_01; break;
+		case 2:  table = fd_10; break;
+		default: table = fd_11; break;
+	}
+
+	if (idx < 12 && table[idx] != nullptr)
+		table[idx]();
+	else
+		armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f]));
 }
 
 // ============================================================================
@@ -1140,11 +1255,10 @@ static void recVU1_Upper_FD()
 //  Maps upper opcode index (upper_word & 0x3f) to a code-emitter function.
 //  Layout mirrors VU1_UPPER_OPCODE in VUops.cpp.
 //
-//  Indices 0x30-0x3B are reserved/unknown in the VU ISA; they are populated
-//  with recVU1_Upper_FD (which BLs to VU1_UPPER_OPCODE and lets the
-//  interpreter handle it, including unknown-instruction logging).
-//  Indices 0x3C-0x3F dispatch through the FD sub-table and likewise use
-//  recVU1_Upper_FD so the sub-table dispatch is handled transparently.
+//  Indices 0x30-0x3B are reserved/unknown in the VU ISA; recVU1_Upper_FD
+//  falls back to VU1_UPPER_OPCODE for those (includes unknown-insn logging).
+//  Indices 0x3C-0x3F are the FD sub-table; recVU1_Upper_FD does compile-time
+//  dispatch into the appropriate recVU1_* emitter based on VU1.code.
 // ============================================================================
 using VU1RecFn = void (*)();
 
@@ -1177,6 +1291,6 @@ VU1RecFn recVU1_UpperTable[64] = {
 	recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD,
 	recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD,
 	recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD,
-	// 0x3C-0x3F: FD sub-table dispatch (ADDA/SUBA/MULA/MADDA/MSUBA/ABS/CLIP/NOP/FTOI/ITOF/OPMULA)
+	// 0x3C-0x3F: FD sub-table dispatch — recVU1_Upper_FD does compile-time dispatch
 	recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD, recVU1_Upper_FD,
 };
