@@ -1069,6 +1069,7 @@ set(pcsx2arm64Sources
 	arm64/iR5900Shift_arm64.cpp
 	arm64/iR5900COP0_arm64.cpp
 	arm64/iR5900COP1_arm64.cpp
+	arm64/iR5900COP2_arm64.cpp
 	arm64/iR5900MMI_arm64.cpp
 	arm64/iR5900LoadStore_arm64.cpp
 	arm64/iR5900Trap_arm64.cpp

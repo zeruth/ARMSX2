@@ -1355,16 +1355,18 @@ void main()
 
 	vec4 C = ps_color();
 
+#if PS_FIXED_ONE_A
+	// AA1 draws use a fixed alpha of 1.0 (128 in PS2 units). Apply before the
+	// alpha test so that the test sees the final output alpha, not the
+	// texture/vertex alpha.
+	C.a = 128.0f;
+#endif
+
 	bool atst_pass = atst(C);
 
 #if PS_AFAIL == AFAIL_KEEP
 	if (!atst_pass)
 		discard;
-#endif
-
-#if PS_FIXED_ONE_A
-	// AA (Fixed one) will output a coverage of 1.0 as alpha
-	C.a = 128.0f;
 #endif
 
 #if SW_AD_TO_HW
