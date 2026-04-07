@@ -19,7 +19,7 @@ import androidx.annotation.IdRes;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 
-import com.pasx2.R;
+import com.armsx2.R;
 
 import org.libsdl.app.SDLControllerManager;
 

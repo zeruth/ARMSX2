@@ -1,11 +1,10 @@
-package com.pasx2
+package com.armsx2
 
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.SurfaceHolder
@@ -45,9 +44,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.pasx2.events.TestResult
-import com.pasx2.ui.Colors
-import com.pasx2.ui.WindowImpl
+import com.armsx2.events.TestResult
+import com.armsx2.ui.Colors
+import com.armsx2.ui.WindowImpl
 import compose.icons.LineAwesomeIcons
 import compose.icons.lineawesomeicons.Android
 import kotlinx.coroutines.CoroutineScope

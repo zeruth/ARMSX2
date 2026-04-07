@@ -119,17 +119,10 @@ void iopArmFlushConstReg(int reg)
 
 void iopArmFlushConstRegs()
 {
-	u32 dirty = g_psxHasConstReg & ~g_psxFlushedConstReg;
-	if (dirty)
-	{
-		DevCon.WriteLn("[IOP FlushConst] Has=0x%08X Flushed=0x%08X dirty=0x%08X",
-			g_psxHasConstReg, g_psxFlushedConstReg, dirty);
-	}
 	for (int i = 1; i < 32; i++)
 	{
 		if ((g_psxHasConstReg & (1u << i)) && !(g_psxFlushedConstReg & (1u << i)))
 		{
-			DevCon.WriteLn("[IOP FlushConst]   r%d = 0x%08X (offset=%d)", i, g_psxConstRegs[i], (int)PSX_GPR_OFFSET(i));
 			armAsm->Mov(RWPSXSCRATCH, g_psxConstRegs[i]);
 			armAsm->Str(RWPSXSCRATCH, MemOperand(RPSXSTATE, PSX_GPR_OFFSET(i)));
 			g_psxFlushedConstReg |= (1u << i);

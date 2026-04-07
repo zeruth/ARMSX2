@@ -1,4 +1,4 @@
-package com.pasx2
+package com.armsx2
 
 enum class EmuState {
     STOPPED,

@@ -31,7 +31,7 @@ static constexpr u32 PS2_FPU_FLAG_SO = 0x00000010;
 static constexpr u32 PS2_FPU_FLAG_SU = 0x00000008;
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
-#ifdef INTERP_COP1
+#if defined(INTERP_COP1) || defined(INTERP_EE)
 #define ISTUB_MFC1     1
 #define ISTUB_MTC1     1
 #define ISTUB_CFC1     1

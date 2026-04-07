@@ -22,7 +22,7 @@ using namespace R5900;
 static constexpr s64 FPR_OFFSET(int reg) { return offsetof(fpuRegisters, fpr) + reg * sizeof(FPRreg); }
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
-#ifdef INTERP_LOAD
+#if defined(INTERP_LOAD) || defined(INTERP_EE)
 #define ISTUB_LB       1
 #define ISTUB_LBU      1
 #define ISTUB_LH       1
@@ -54,7 +54,7 @@ static constexpr s64 FPR_OFFSET(int reg) { return offsetof(fpuRegisters, fpr) + 
 #define ISTUB_LQC2     1   // 128-bit VU — keep as interp
 #endif
 
-#ifdef INTERP_STORE
+#if defined(INTERP_STORE) || defined(INTERP_EE)
 #define ISTUB_SB       1
 #define ISTUB_SH       1
 #define ISTUB_SW       1

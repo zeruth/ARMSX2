@@ -162,11 +162,12 @@ void armFlushCode();
 u8* recBeginThunk();
 u8* recEndThunk();
 
-//FIXME: If you are using any interpreter ops, you should enable fast boot
+// Bisect: Commented = native
+// Un-comment a group to find a general problem area
+// Un-comment indiviudal ops to narrow it down to a specific op
 
 //EE
-// Bisect: comment out a line to enable native codegen for that file.
-// All uncommented = all interp stubs. Comment one at a time to find the bug.
+//#define INTERP_EE        // Master
 //#define INTERP_BRANCH    // BEQ, BNE, J, JAL, JR, JALR, SYSCALL, BREAK, etc.
 //#define INTERP_MOVE      // LUI, MFHI/LO, MTHI/LO, MOVZ, MOVN, MFSA, MTSA, etc.
 //#define INTERP_COP0      // MFC0, MTC0, BC0x, TLB*, ERET, EI, DI
@@ -179,12 +180,24 @@ u8* recEndThunk();
 //#define INTERP_TRAP      // TGEI, TGEIU, TLTI, TLTIU, TEQI, TNEI, TGE, TGEU, TLT, TLTU, TEQ, TNE
 
 //VU0
-//#define INTERP_VU0            // Master switch: defined = use CpuIntVU0 (interpreter); comment out = use CpuArmVU0 (block JIT)
+// Bisect: comment out a line to enable native codegen for that aspect.
+// All uncommented = pair machinery falls back to vu0Exec wherever the aspect
+// applies (closest the JIT can get to the interpreter while still going
+// through block dispatch). Comment one at a time to find the offending native emit.
+// Note: VU0 has no per-instruction native codegen — every entry in
+// recVU0_UpperTable / recVU0_LowerTable is an interpreter stub. The bug surface
+// is the per-pair block machinery emitted by CompileBlock in iVU0micro_arm64.cpp.
+//#define INTERP_VU0            // Master
+//#define INTERP_VU0_PAIR       // Force every pair to fall back to vu0Exec (kills all per-pair native machinery)
+//#define INTERP_VU0_HAZARD     // (Dormant — VF/CLIP hazards always fall back; native save/restore not yet implemented)
+//#define INTERP_VU0_MBIT       // Fall back to vu0Exec when M-bit (bit 29) is set on the upper instruction
+//#define INTERP_VU0_DTBITS     // Fall back to vu0Exec when D-bit or T-bit is set
+//#define INTERP_VU0_EBIT       // Fall back to vu0Exec when E-bit is set
+//#define INTERP_VU0_BRANCH     // Fall back to vu0Exec when the pair contains a branch lower op
+//#define INTERP_VU0_FMAC       // Fall back to vu0Exec when the pair has an FMAC pipe op
 
 //VU1
-// Bisect: comment out a line to enable native codegen for that group.
-// All uncommented = all interp stubs. Comment one at a time to find the bug.
-//#define INTERP_VU1            // Master switch: defined = use CpuIntVU1 (interpreter); comment out = use CpuArmVU1 (block JIT)
+//#define INTERP_VU1            // Master
 //#define INTERP_VU_UPPER      // FMAC arith (ADD/SUB/MUL/MADD/MSUB xyzwqi), accum, MAX/MINI, ABS, CLIP, FTOI/ITOF, NOP
 //#define INTERP_VU_FDIV       // DIV, SQRT, RSQRT, WAITQ, WAITP
 //#define INTERP_VU_IALU       // IADD, ISUB, IADDI, IADDIU, ISUBIU, IAND, IOR
@@ -193,15 +206,12 @@ u8* recEndThunk();
 //#define INTERP_VU_MISC       // MOVE, MR32, MFIR, MTIR, MFP, flag ops, random, EFU, XITOP, XTOP, XGKICK
 
 //DMAC
-// Bisect: comment out to enable native codegen for DMA channels.
 //#define INTERP_DMAC          // VIF0, VIF1, GIF, IPU0/1, SIF0/1/2, SPR0/1 + interrupt handlers
 
 //IOP
-// Bisect: comment out a line to enable native codegen for that group.
-// All uncommented = all interp stubs. Comment one at a time to find bugs.
-//#define INTERP_IOP             // Master: use psxInt entirely (bypasses IOP JIT)
-#define INTERP_IOP_ALU         // BISECT: uncommented → per-instruction ISTUBs in iR3000Atables_arm64.cpp
-#define INTERP_IOP_BRANCH      // BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ/BLTZAL/BGEZAL/J/JAL/JR/JALR
+//#define INTERP_IOP             // Master
+//#define INTERP_IOP_ALU         // BISECT: uncommented → per-instruction ISTUBs in iR3000Atables_arm64.cpp
+//#define INTERP_IOP_BRANCH      // BEQ/BNE/BLEZ/BGTZ/BLTZ/BGEZ/BLTZAL/BGEZAL/J/JAL/JR/JALR
 //#define INTERP_IOP_SHIFT       // SLL/SRL/SRA/SLLV/SRLV/SRAV
 //#define INTERP_IOP_MULTDIV     // MULT/MULTU/DIV/DIVU/MFHI/MTHI/MFLO/MTLO
 //#define INTERP_IOP_MOVE        // MFHI/MTHI/MFLO/MTLO

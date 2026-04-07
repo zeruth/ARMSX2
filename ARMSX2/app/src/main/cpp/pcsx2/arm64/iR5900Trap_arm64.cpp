@@ -12,7 +12,7 @@ using namespace R5900;
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
 // Traps are rarely executed by games, so interpreter stubs are fine.
-#ifdef INTERP_TRAP
+#if defined(INTERP_TRAP) || defined(INTERP_EE)
 #define ISTUB_TGEI     1
 #define ISTUB_TGEIU    1
 #define ISTUB_TLTI     1

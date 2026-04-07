@@ -1,12 +1,11 @@
-package com.pasx2.ui.toolbar
+package com.armsx2.ui.toolbar
 
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.vector.ImageVector
-import com.pasx2.Main
-import com.pasx2.RenderMode
+import com.armsx2.Main
+import com.armsx2.RenderMode
 import compose.icons.LineAwesomeIcons
 import compose.icons.lineawesomeicons.Dashcube
-import compose.icons.lineawesomeicons.FolderOpen
 
 class RenderModeButton : ToolbarButton() {
     var renderMode = RenderMode.VULKAN_HW

@@ -1,4 +1,4 @@
-package com.pasx2.ui
+package com.armsx2.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -8,8 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.pasx2.EmuState
-import com.pasx2.Main
+import com.armsx2.EmuState
+import com.armsx2.Main
 
 object WindowImpl {
     val toolbarVisible = mutableStateOf(true)

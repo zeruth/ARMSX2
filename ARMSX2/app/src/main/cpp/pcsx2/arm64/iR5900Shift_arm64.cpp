@@ -12,7 +12,7 @@
 using namespace R5900;
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
-#ifdef INTERP_SHIFT
+#if defined(INTERP_SHIFT) || defined(INTERP_EE)
 #define ISTUB_SLL      1
 #define ISTUB_SRL      1
 #define ISTUB_SRA      1

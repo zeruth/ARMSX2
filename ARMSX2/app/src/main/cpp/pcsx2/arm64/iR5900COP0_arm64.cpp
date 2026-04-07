@@ -21,7 +21,7 @@ static constexpr s64 LAST_COP0_CYCLE_OFFSET = offsetof(cpuRegisters, lastCOP0Cyc
 static constexpr s64 LAST_PERF_CYCLE_OFFSET(int n) { return offsetof(cpuRegisters, lastPERFCycle) + n * sizeof(u64); }
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
-#ifdef INTERP_COP0
+#if defined(INTERP_COP0) || defined(INTERP_EE)
 #define ISTUB_MFC0     1
 #define ISTUB_MTC0     1
 #define ISTUB_BC0F     1

@@ -1,4 +1,4 @@
-package com.pasx2.ui
+package com.armsx2.ui
 
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color

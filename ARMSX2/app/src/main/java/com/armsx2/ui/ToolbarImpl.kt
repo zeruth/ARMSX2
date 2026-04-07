@@ -1,4 +1,4 @@
-package com.pasx2.ui
+package com.armsx2.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -13,13 +13,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.pasx2.ui.toolbar.LoadGameButton
-import com.pasx2.ui.toolbar.PauseButton
-import com.pasx2.ui.toolbar.RenderModeButton
-import com.pasx2.ui.toolbar.RestartButton
-import com.pasx2.ui.toolbar.StartButton
-import com.pasx2.ui.toolbar.StopButton
-import com.pasx2.ui.toolbar.ToolbarButton
+import com.armsx2.ui.toolbar.LoadGameButton
+import com.armsx2.ui.toolbar.PauseButton
+import com.armsx2.ui.toolbar.RenderModeButton
+import com.armsx2.ui.toolbar.RestartButton
+import com.armsx2.ui.toolbar.StartButton
+import com.armsx2.ui.toolbar.StopButton
+import com.armsx2.ui.toolbar.ToolbarButton
 
 object ToolbarImpl {
 

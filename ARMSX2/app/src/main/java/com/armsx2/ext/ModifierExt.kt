@@ -1,4 +1,4 @@
-package com.pasx2.ext
+package com.armsx2.ext
 
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier

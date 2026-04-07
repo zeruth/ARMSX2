@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.pasx2"
+    namespace = "com.armsx2"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -12,7 +12,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.pasx2"
+        applicationId = "com.armsx2"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

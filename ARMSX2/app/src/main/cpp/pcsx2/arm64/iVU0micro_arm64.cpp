@@ -12,6 +12,7 @@
 #include "VUmicro.h"
 #include "VUops.h"
 #include "arm64/AsmHelpers.h"
+#include "arm64/arm64Emitter.h"
 #include "arm64/iVU0micro_arm64.h"
 
 #include <cstring>
@@ -247,10 +248,43 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		const bool vi_hazard = !ibit &&
 			(uregs.VIwrite & (1u << REG_CLIP_FLAG)) &&
 			(lregs.VIread  & (1u << REG_CLIP_FLAG));
+		const bool mbit_set    = ((upper >> 29) & 1) != 0;
+		const bool fmac_pipe   = (uregs.pipe == VUPIPE_FMAC) || (lregs.pipe == VUPIPE_FMAC);
+		const bool branch_pipe = !ibit && (lregs.pipe == VUPIPE_BRANCH);
 
-		if (vf_hazard || vi_hazard)
+		// Group bisects (see arm64Emitter.h). When the corresponding aspect macro
+		// is defined, any pair where the aspect applies falls back to vu0Exec for
+		// the entire pair instead of running the per-pair native machinery.
+		bool fallback = false;
+#ifdef INTERP_VU0_PAIR
+		fallback = true;
+#endif
+		// Hazard fallback is always on: native VF/CLIP_FLAG save/restore (the
+		// thing _vu0Exec lines 104-158 / microVU does to make lower see pre-upper
+		// values) is not yet implemented in this JIT. INTERP_VU0_HAZARD is kept as
+		// a documentation handle but does not toggle behavior today.
+		if (vf_hazard || vi_hazard) fallback = true;
+#ifdef INTERP_VU0_MBIT
+		if (mbit_set) fallback = true;
+#endif
+#ifdef INTERP_VU0_DTBITS
+		if (dbit_set || tbit_set) fallback = true;
+#endif
+#ifdef INTERP_VU0_EBIT
+		if (ebit_set) fallback = true;
+#endif
+#ifdef INTERP_VU0_BRANCH
+		if (branch_pipe) fallback = true;
+#endif
+#ifdef INTERP_VU0_FMAC
+		if (fmac_pipe) fallback = true;
+#endif
+
+		if (fallback)
 		{
-			// Hazard — fall back to interpreter for this pair
+			// Per-pair fallback — call vu0Exec for the whole pair. vu0Exec
+			// internally bumps cycle and advances TPC by 8 from its current
+			// value, so the JIT must NOT touch cycle/TPC here.
 			armAsm->Mov(x0, VU0_BASE_REG);
 			armEmitCall(reinterpret_cast<const void*>(vu0Exec));
 		}
@@ -272,6 +306,17 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 			{
 				armAsm->Mov(w4, 2u);
 				armAsm->Str(w4, MemOperand(VU0_BASE_REG, ebit_off));
+			}
+
+			// 3b. M-bit (early-exit signal to EE — VU0 only)
+			// Mirrors _vu0Exec at VU0microInterp.cpp:40-44 and microVU at
+			// microVU_Compile.inl:892. Without this, the EE never observes
+			// VUFLAG_MFLAGSET and waits forever for VU0 M-bit completion.
+			if (mbit_set)
+			{
+				armAsm->Ldr(w4, MemOperand(VU0_BASE_REG, flags_off));
+				armAsm->Orr(w4, w4, VUFLAG_MFLAGSET);
+				armAsm->Str(w4, MemOperand(VU0_BASE_REG, flags_off));
 			}
 
 			// 4. D/T bits

@@ -512,7 +512,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     // fast_boot : (false:bios->game, true:game)
     VMBootParameters boot_params;
     boot_params.filename = _szPath;
-    boot_params.fast_boot = true;
+    boot_params.fast_boot = false;
     Console.Error("Loading %s", _szPath.c_str());
     if (!VMManager::Internal::CPUThreadInitialize()) {
         VMManager::Internal::CPUThreadShutdown();

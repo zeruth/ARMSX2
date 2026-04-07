@@ -100,25 +100,25 @@ void _recFillRegister(EEINST& pinst, int type, int reg, int write)
 #else
 // --- ALU bisect: flip individual 1→0 to find buggy instruction ---
 // I-type (immediate) ALU — bisect round 2:
-#define ISTUB_IOP_ADDI   1  // bisect: interp
-#define ISTUB_IOP_ADDIU  1  // bisect: interp
-#define ISTUB_IOP_SLTI   1  // bisect: interp
-#define ISTUB_IOP_SLTIU  1  // bisect: interp
-#define ISTUB_IOP_ANDI   1  // bisect: interp
-#define ISTUB_IOP_ORI    1  // bisect: interp
-#define ISTUB_IOP_XORI   1  // bisect: interp
-#define ISTUB_IOP_LUI    0  // bisect: LUI ONLY native
+#define ISTUB_IOP_ADDI   0
+#define ISTUB_IOP_ADDIU  0
+#define ISTUB_IOP_SLTI   0
+#define ISTUB_IOP_SLTIU  0
+#define ISTUB_IOP_ANDI   0
+#define ISTUB_IOP_ORI    0
+#define ISTUB_IOP_XORI   0
+#define ISTUB_IOP_LUI    0
 // R-type (register-register) ALU:
-#define ISTUB_IOP_ADD    1  // bisect: interp
-#define ISTUB_IOP_ADDU   1  // bisect: interp
-#define ISTUB_IOP_SUB    1  // bisect: interp
-#define ISTUB_IOP_SUBU   1  // bisect: interp
-#define ISTUB_IOP_AND    1  // bisect: interp
-#define ISTUB_IOP_OR     1  // bisect: interp
-#define ISTUB_IOP_XOR    1  // bisect: interp
-#define ISTUB_IOP_NOR    1  // bisect: interp
-#define ISTUB_IOP_SLT    1  // bisect: interp
-#define ISTUB_IOP_SLTU   1  // bisect: interp
+#define ISTUB_IOP_ADD    0
+#define ISTUB_IOP_ADDU   0
+#define ISTUB_IOP_SUB    0
+#define ISTUB_IOP_SUBU   0
+#define ISTUB_IOP_AND    0
+#define ISTUB_IOP_OR     0
+#define ISTUB_IOP_XOR    0
+#define ISTUB_IOP_NOR    0
+#define ISTUB_IOP_SLT    0
+#define ISTUB_IOP_SLTU   0
 #endif
 
 // --- SHIFT ---
@@ -179,6 +179,8 @@ void _recFillRegister(EEINST& pinst, int type, int reg, int write)
 #define ISTUB_IOP_BLTZAL 1
 #define ISTUB_IOP_BGEZAL 1
 #else
+// --- BRANCH bisect: flip individual 1→0 to find buggy branch op ---
+// Start with all interp (1), enable native one at a time.
 #define ISTUB_IOP_J      0
 #define ISTUB_IOP_JAL    0
 #define ISTUB_IOP_JR     0
@@ -529,8 +531,6 @@ static void rpsxLUI()
 	if (!_psxRt_) return;
 	g_psxConstRegs[_psxRt_] = psxRegs.code << 16;
 	PSX_SET_CONST(_psxRt_);
-	// No forced flush — rely on deferred flush from iopArmFlushConstRegs
-	// (diagnostics added there to debug the deferred flush path)
 }
 #endif
 
@@ -545,9 +545,12 @@ static void rpsxLUI()
 			PSX_SET_CONST(_psxRd_); \
 			return; \
 		} \
-		PSX_DEL_CONST(_psxRd_); \
+		/* Load Rs/Rt BEFORE deleting Rd's const, in case Rd aliases Rs or Rt */ \
+		/* with a dirty const (Has=1, Flushed=0). PSX_DEL_CONST clears the Has bit */ \
+		/* but never flushes; iopArmLoadGPR would then read stale memory. */ \
 		iopArmLoadGPR(RWPSXSCRATCH, _psxRs_); \
 		iopArmLoadGPR(RWPSXSCRATCH2, _psxRt_); \
+		PSX_DEL_CONST(_psxRd_); \
 		armAsm->interp_fn(RWPSXSCRATCH, RWPSXSCRATCH, RWPSXSCRATCH2); \
 		iopArmStoreGPR(RWPSXSCRATCH, _psxRd_); \
 	}
@@ -606,9 +609,10 @@ static void rpsxNOR()
 		PSX_SET_CONST(_psxRd_);
 		return;
 	}
-	PSX_DEL_CONST(_psxRd_);
+	// Load Rs/Rt BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRs_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRt_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Orr(RWPSXSCRATCH, RWPSXSCRATCH, RWPSXSCRATCH2);
 	armAsm->Mvn(RWPSXSCRATCH, RWPSXSCRATCH);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
@@ -627,9 +631,10 @@ static void rpsxSLT()
 		PSX_SET_CONST(_psxRd_);
 		return;
 	}
-	PSX_DEL_CONST(_psxRd_);
+	// Load Rs/Rt BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRs_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRt_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Cmp(RWPSXSCRATCH, RWPSXSCRATCH2);
 	armAsm->Cset(RWPSXSCRATCH, lt);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
@@ -648,9 +653,10 @@ static void rpsxSLTU()
 		PSX_SET_CONST(_psxRd_);
 		return;
 	}
-	PSX_DEL_CONST(_psxRd_);
+	// Load Rs/Rt BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRs_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRt_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Cmp(RWPSXSCRATCH, RWPSXSCRATCH2);
 	armAsm->Cset(RWPSXSCRATCH, lo);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
@@ -727,9 +733,10 @@ REC_FUNC(SLLV)
 static void rpsxSLLV()
 {
 	if (!_psxRd_) return;
-	PSX_DEL_CONST(_psxRd_);
+	// Load inputs BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRt_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRs_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Lsl(RWPSXSCRATCH, RWPSXSCRATCH, RWPSXSCRATCH2);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
 }
@@ -741,9 +748,10 @@ REC_FUNC(SRLV)
 static void rpsxSRLV()
 {
 	if (!_psxRd_) return;
-	PSX_DEL_CONST(_psxRd_);
+	// Load inputs BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRt_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRs_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Lsr(RWPSXSCRATCH, RWPSXSCRATCH, RWPSXSCRATCH2);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
 }
@@ -755,9 +763,10 @@ REC_FUNC(SRAV)
 static void rpsxSRAV()
 {
 	if (!_psxRd_) return;
-	PSX_DEL_CONST(_psxRd_);
+	// Load inputs BEFORE deleting Rd's const, in case Rd aliases an input.
 	iopArmLoadGPR(RWPSXSCRATCH, _psxRt_);
 	iopArmLoadGPR(RWPSXSCRATCH2, _psxRs_);
+	PSX_DEL_CONST(_psxRd_);
 	armAsm->Asr(RWPSXSCRATCH, RWPSXSCRATCH, RWPSXSCRATCH2);
 	iopArmStoreGPR(RWPSXSCRATCH, _psxRd_);
 }
@@ -966,6 +975,11 @@ static void rpsxJALR() { iopArmBranchCallInterpreter(psxJALR); }
 #else
 static void rpsxJALR()
 {
+	// Capture link target BEFORE psxTrySwapDelaySlot — the swap path calls
+	// psxRecompileNextInstruction which bumps psxpc by 4 and does NOT restore it
+	// (swapped_delayslot only restores psxRegs.code and g_pCurInstInfo). Mirror
+	// upstream rpsxJALR at pcsx2/x86/iR3000Atables.cpp:1457.
+	const u32 newpc = psxpc + 4;
 	const bool swap = (_psxRd_ == _psxRs_) ? false : psxTrySwapDelaySlot(_psxRs_, 0, _psxRd_);
 
 	// Load Rs into callee-saved scratch so it survives delay slot compilation
@@ -978,7 +992,7 @@ static void rpsxJALR()
 	if (_psxRd_)
 	{
 		PSX_SET_CONST(_psxRd_);
-		g_psxConstRegs[_psxRd_] = psxpc + 4;
+		g_psxConstRegs[_psxRd_] = newpc;
 	}
 
 	if (!swap)
@@ -1356,7 +1370,7 @@ REC_FUNC(LB)
 static void rpsxLB()
 {
 	if (!_psxRt_) return;
-	PSX_DEL_CONST(_psxRt_);
+	// Load Rs BEFORE deleting Rt's const, in case Rs == Rt with a dirty const.
 	iopArmLoadGPR(RWARG1, _psxRs_);
 	if (_psxImm_ != 0)
 	{
@@ -1373,6 +1387,7 @@ static void rpsxLB()
 			armAsm->Add(RWARG1, RWARG1, RWPSXSCRATCH);
 		}
 	}
+	PSX_DEL_CONST(_psxRt_);
 	iopArmFlushConstRegs();
 	armEmitCall((const void*)iopMemRead8);
 	armAsm->Sxtb(RWRET, RWRET);
@@ -1386,7 +1401,7 @@ REC_FUNC(LBU)
 static void rpsxLBU()
 {
 	if (!_psxRt_) return;
-	PSX_DEL_CONST(_psxRt_);
+	// Load Rs BEFORE deleting Rt's const, in case Rs == Rt with a dirty const.
 	iopArmLoadGPR(RWARG1, _psxRs_);
 	if (_psxImm_ != 0)
 	{
@@ -1403,6 +1418,7 @@ static void rpsxLBU()
 			armAsm->Add(RWARG1, RWARG1, RWPSXSCRATCH);
 		}
 	}
+	PSX_DEL_CONST(_psxRt_);
 	iopArmFlushConstRegs();
 	armEmitCall((const void*)iopMemRead8);
 	// w0 is already zero-extended
@@ -1416,7 +1432,7 @@ REC_FUNC(LH)
 static void rpsxLH()
 {
 	if (!_psxRt_) return;
-	PSX_DEL_CONST(_psxRt_);
+	// Load Rs BEFORE deleting Rt's const, in case Rs == Rt with a dirty const.
 	iopArmLoadGPR(RWARG1, _psxRs_);
 	if (_psxImm_ != 0)
 	{
@@ -1433,6 +1449,7 @@ static void rpsxLH()
 			armAsm->Add(RWARG1, RWARG1, RWPSXSCRATCH);
 		}
 	}
+	PSX_DEL_CONST(_psxRt_);
 	iopArmFlushConstRegs();
 	armEmitCall((const void*)iopMemRead16);
 	armAsm->Sxth(RWRET, RWRET);
@@ -1446,7 +1463,7 @@ REC_FUNC(LHU)
 static void rpsxLHU()
 {
 	if (!_psxRt_) return;
-	PSX_DEL_CONST(_psxRt_);
+	// Load Rs BEFORE deleting Rt's const, in case Rs == Rt with a dirty const.
 	iopArmLoadGPR(RWARG1, _psxRs_);
 	if (_psxImm_ != 0)
 	{
@@ -1463,6 +1480,7 @@ static void rpsxLHU()
 			armAsm->Add(RWARG1, RWARG1, RWPSXSCRATCH);
 		}
 	}
+	PSX_DEL_CONST(_psxRt_);
 	iopArmFlushConstRegs();
 	armEmitCall((const void*)iopMemRead16);
 	iopArmStoreGPR(RWRET, _psxRt_);
@@ -1475,7 +1493,7 @@ REC_FUNC(LW)
 static void rpsxLW()
 {
 	if (!_psxRt_) return;
-	PSX_DEL_CONST(_psxRt_);
+	// Load Rs BEFORE deleting Rt's const, in case Rs == Rt with a dirty const.
 	iopArmLoadGPR(RWARG1, _psxRs_);
 	if (_psxImm_ != 0)
 	{
@@ -1492,6 +1510,7 @@ static void rpsxLW()
 			armAsm->Add(RWARG1, RWARG1, RWPSXSCRATCH);
 		}
 	}
+	PSX_DEL_CONST(_psxRt_);
 	iopArmFlushConstRegs();
 	armEmitCall((const void*)iopMemRead32);
 	iopArmStoreGPR(RWRET, _psxRt_);

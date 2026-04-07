@@ -45,10 +45,6 @@ include(SearchForStuff)
 
 # Must be done after SearchForStuff
 get_git_version_info()
-if(ANDROID)
-	set(PCSX2_GIT_REV "v2.7.228-SNAPSHOT")
-	set(PCSX2_GIT_TAG "v2.7.228-SNAPSHOT")
-endif()
 write_svnrev_h()
 
 # make common

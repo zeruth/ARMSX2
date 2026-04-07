@@ -6,9 +6,9 @@ import android.net.Uri;
 import android.os.ParcelFileDescriptor;
 import android.view.Surface;
 
-import com.pasx2.EmuState;
-import com.pasx2.Main;
-import com.pasx2.events.TestResult;
+import com.armsx2.EmuState;
+import com.armsx2.Main;
+import com.armsx2.events.TestResult;
 
 import java.io.File;
 import java.lang.ref.WeakReference;

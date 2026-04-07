@@ -27,7 +27,7 @@ namespace MMI {
 //  No templates, no _Rd_ guards, no NEON code — just plain interpreter calls.
 // ============================================================================
 
-#ifdef INTERP_MMI
+#if defined(INTERP_MMI) || defined(INTERP_EE)
 
 #define REC_MMI_STUB(name) \
 	void rec##name() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::name); }
