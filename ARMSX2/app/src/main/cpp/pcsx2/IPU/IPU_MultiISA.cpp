@@ -208,10 +208,68 @@ __ri static u8 getBits8(u8 *address, bool advance)
 
 __fi static void BUTTERFLY(int& t0, int& t1, int w0, int w1, int d0, int d1)
 {
+	// Expands to: t0 = w0*d0 + w1*d1,  t1 = w0*d1 - w1*d0
 	int tmp = w0 * (d0 + d1);
 	t0 = tmp + (w1 - w0) * d1;
 	t1 = tmp - (w1 + w0) * d0;
 }
+
+#if defined(ARCH_ARM64)
+// NEON IDCT column pass: process 4 consecutive columns simultaneously.
+// col_start = 0 handles cols 0-3, col_start = 4 handles cols 4-7.
+// Replaces the inner scalar loop for 4 columns at once using int32x4 butterfly.
+__ri static void IDCT_ColPass_NEON(s16* block, int col_start)
+{
+	// Load row[k], cols [col_start..col_start+3] → widen to int32x4
+	int32x4_t d0 = vmovl_s16(vld1_s16(block + 0*8 + col_start));
+	int32x4_t d1 = vmovl_s16(vld1_s16(block + 1*8 + col_start));
+	int32x4_t d2 = vmovl_s16(vld1_s16(block + 2*8 + col_start));
+	int32x4_t d3 = vmovl_s16(vld1_s16(block + 3*8 + col_start));
+	int32x4_t d4 = vmovl_s16(vld1_s16(block + 4*8 + col_start));
+	int32x4_t d5 = vmovl_s16(vld1_s16(block + 5*8 + col_start));
+	int32x4_t d6 = vmovl_s16(vld1_s16(block + 6*8 + col_start));
+	int32x4_t d7 = vmovl_s16(vld1_s16(block + 7*8 + col_start));
+
+	// Even part — a0..a3
+	// dd0 = (d0 << 11) + 65536, dd2 = d2 << 11
+	int32x4_t dd0 = vaddq_s32(vshlq_n_s32(d0, 11), vdupq_n_s32(65536));
+	int32x4_t dd2 = vshlq_n_s32(d2, 11);
+	int32x4_t t0  = vaddq_s32(dd0, dd2);
+	int32x4_t t1  = vsubq_s32(dd0, dd2);
+	// BUTTERFLY(t2, t3, W6, W2, d3, d1): t2 = W6*d3 + W2*d1, t3 = W6*d1 - W2*d3
+	int32x4_t t2  = vmlaq_n_s32(vmulq_n_s32(d3, W6), d1, W2);
+	int32x4_t t3  = vmlsq_n_s32(vmulq_n_s32(d1, W6), d3, W2);
+	int32x4_t a0  = vaddq_s32(t0, t2);
+	int32x4_t a1  = vaddq_s32(t1, t3);
+	int32x4_t a2  = vsubq_s32(t1, t3);
+	int32x4_t a3  = vsubq_s32(t0, t2);
+
+	// Odd part — b0..b3
+	// BUTTERFLY(bt0, bt1, W7, W1, d7, d4): bt0 = W7*d7 + W1*d4, bt1 = W7*d4 - W1*d7
+	int32x4_t bt0 = vmlaq_n_s32(vmulq_n_s32(d7, W7), d4, W1);
+	int32x4_t bt1 = vmlsq_n_s32(vmulq_n_s32(d4, W7), d7, W1);
+	// BUTTERFLY(bt2, bt3, W3, W5, d5, d6): bt2 = W3*d5 + W5*d6, bt3 = W3*d6 - W5*d5
+	int32x4_t bt2 = vmlaq_n_s32(vmulq_n_s32(d5, W3), d6, W5);
+	int32x4_t bt3 = vmlsq_n_s32(vmulq_n_s32(d6, W3), d5, W5);
+	int32x4_t b0  = vaddq_s32(bt0, bt2);
+	int32x4_t b3  = vaddq_s32(bt1, bt3);
+	// bta = (bt0 - bt2) >> 8, btb = (bt1 - bt3) >> 8
+	int32x4_t bta = vshrq_n_s32(vsubq_s32(bt0, bt2), 8);
+	int32x4_t btb = vshrq_n_s32(vsubq_s32(bt1, bt3), 8);
+	int32x4_t b1  = vmulq_n_s32(vaddq_s32(bta, btb), 181);
+	int32x4_t b2  = vmulq_n_s32(vsubq_s32(bta, btb), 181);
+
+	// Combine and narrow (>> 17), store 4 s16 per row
+	vst1_s16(block + 0*8 + col_start, vmovn_s32(vshrq_n_s32(vaddq_s32(a0, b0), 17)));
+	vst1_s16(block + 1*8 + col_start, vmovn_s32(vshrq_n_s32(vaddq_s32(a1, b1), 17)));
+	vst1_s16(block + 2*8 + col_start, vmovn_s32(vshrq_n_s32(vaddq_s32(a2, b2), 17)));
+	vst1_s16(block + 3*8 + col_start, vmovn_s32(vshrq_n_s32(vaddq_s32(a3, b3), 17)));
+	vst1_s16(block + 4*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a3, b3), 17)));
+	vst1_s16(block + 5*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a2, b2), 17)));
+	vst1_s16(block + 6*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a1, b1), 17)));
+	vst1_s16(block + 7*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a0, b0), 17)));
+}
+#endif // ARCH_ARM64
 
 __ri static void IDCT_Block(s16* block)
 {
@@ -273,6 +331,10 @@ __ri static void IDCT_Block(s16* block)
 		rblock[7] = (a0 - b0) >> 8;
 	}
 
+#if defined(ARCH_ARM64)
+	IDCT_ColPass_NEON(block, 0);
+	IDCT_ColPass_NEON(block, 4);
+#else
 	for (int i = 0; i < 8; i++)
 	{
 		s16* const cblock = block + i;
@@ -320,6 +382,7 @@ __ri static void IDCT_Block(s16* block)
 		cblock[8 * 6] = (a1 - b1) >> 17;
 		cblock[8 * 7] = (a0 - b0) >> 17;
 	}
+#endif
 }
 
 __ri static void IDCT_Copy(s16* block, u8* dest, const int stride)

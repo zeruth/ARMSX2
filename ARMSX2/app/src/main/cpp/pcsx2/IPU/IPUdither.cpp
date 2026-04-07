@@ -12,14 +12,20 @@ MULTI_ISA_UNSHARED_START
 
 void ipu_dither_reference(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16, int dte);
 
-#if defined(_M_X86)
+#if defined(_M_X86) || defined(ARCH_X86)
 void ipu_dither_sse2(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16, int dte);
+#endif
+
+#if defined(ARCH_ARM64)
+void ipu_dither_neon(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16, int dte);
 #endif
 
 __ri void ipu_dither(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16, int dte)
 {
-#if defined(_M_X86)
+#if defined(_M_X86) || defined(ARCH_X86)
     ipu_dither_sse2(rgb32, rgb16, dte);
+#elif defined(ARCH_ARM64)
+    ipu_dither_neon(rgb32, rgb16, dte);
 #else
     ipu_dither_reference(rgb32, rgb16, dte);
 #endif
@@ -120,5 +126,74 @@ __ri void ipu_dither_sse2(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16
 }
 
 #endif
+
+#if defined(ARCH_ARM64)
+
+// Dither coefficient table (matches ipu_dither_reference):
+//   Row 0: -4, 0, -3, 1     Row 1:  2,-2, 3,-1
+//   Row 2: -3, 1, -4, 0     Row 3:  3,-1, 2,-2
+// Split into saturating-add (positive part) and saturating-sub (negative part),
+// repeated twice for the 8-pixel column group [0..7] = [0..3, 0..3].
+alignas(8) static const uint8_t s_dith_add[4][8] = {
+    {0, 0, 0, 1,  0, 0, 0, 1},  // row mod 4 == 0
+    {2, 0, 3, 0,  2, 0, 3, 0},  // row mod 4 == 1
+    {0, 1, 0, 0,  0, 1, 0, 0},  // row mod 4 == 2
+    {3, 0, 2, 0,  3, 0, 2, 0},  // row mod 4 == 3
+};
+alignas(8) static const uint8_t s_dith_sub[4][8] = {
+    {4, 0, 3, 0,  4, 0, 3, 0},  // row mod 4 == 0
+    {0, 2, 0, 1,  0, 2, 0, 1},  // row mod 4 == 1
+    {3, 0, 4, 0,  3, 0, 4, 0},  // row mod 4 == 2
+    {0, 1, 0, 2,  0, 1, 0, 2},  // row mod 4 == 3
+};
+
+// Pack separate u8 R/G/B/A lanes into rgb16_t (r:5, g:5, b:5, a:1) words.
+// Input: r/g/b already shifted >> 3; a_bit is 0 or 1.
+static __fi uint16x8_t pack_rgb16(uint8x8_t r, uint8x8_t g, uint8x8_t b, uint8x8_t a_bit)
+{
+    uint16x8_t r16 = vmovl_u8(r);
+    uint16x8_t g16 = vshlq_n_u16(vmovl_u8(g), 5);
+    uint16x8_t b16 = vshlq_n_u16(vmovl_u8(b), 10);
+    uint16x8_t a16 = vshlq_n_u16(vmovl_u8(a_bit), 15);
+    return vorrq_u16(vorrq_u16(r16, g16), vorrq_u16(b16, a16));
+}
+
+__ri void ipu_dither_neon(const macroblock_rgb32 &rgb32, macroblock_rgb16 &rgb16, int dte)
+{
+    const uint8x8_t alpha_ref = vdup_n_u8(0x40);
+
+    for (int i = 0; i < 16; ++i)
+    {
+        for (int n = 0; n < 2; ++n)
+        {
+            // Load 8 RGBA pixels deinterleaved: val[0]=R, val[1]=G, val[2]=B, val[3]=A
+            uint8x8x4_t rgba = vld4_u8(reinterpret_cast<const uint8_t*>(&rgb32.c[i][n * 8]));
+
+            if (dte)
+            {
+                // Apply dither to R, G, B (same coefficient for all channels).
+                // Saturating add/sub clamps to [0,255] naturally.
+                uint8x8_t dadd = vld1_u8(s_dith_add[i & 3]);
+                uint8x8_t dsub = vld1_u8(s_dith_sub[i & 3]);
+                rgba.val[0] = vqadd_u8(vqsub_u8(rgba.val[0], dsub), dadd);
+                rgba.val[1] = vqadd_u8(vqsub_u8(rgba.val[1], dsub), dadd);
+                rgba.val[2] = vqadd_u8(vqsub_u8(rgba.val[2], dsub), dadd);
+            }
+
+            // Shift channels to 5-bit precision
+            uint8x8_t r = vshr_n_u8(rgba.val[0], 3);
+            uint8x8_t g = vshr_n_u8(rgba.val[1], 3);
+            uint8x8_t b = vshr_n_u8(rgba.val[2], 3);
+
+            // Alpha bit: 1 where A == 0x40, else 0
+            uint8x8_t a_bit = vshr_n_u8(vceq_u8(rgba.val[3], alpha_ref), 7);
+
+            uint16x8_t out = pack_rgb16(r, g, b, a_bit);
+            vst1q_u16(reinterpret_cast<uint16_t*>(&rgb16.c[i][n * 8]), out);
+        }
+    }
+}
+
+#endif // ARCH_ARM64
 
 MULTI_ISA_UNSHARED_END
