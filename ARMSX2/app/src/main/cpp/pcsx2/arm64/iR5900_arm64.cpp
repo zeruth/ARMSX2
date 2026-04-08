@@ -425,8 +425,8 @@ static const void* _DynGen_EnterRecompiledCode()
 	armBeginStackFrame(false);
 
 	// Load pinned state registers
+	// (fpuRegs is reached via RCPUSTATE + FPUREGS_BASE — no dedicated reg.)
 	armMoveAddressToReg(RCPUSTATE, &cpuRegs);
-	armMoveAddressToReg(RFPUSTATE, &fpuRegs);
 	armMoveAddressToReg(RRECLUT, recLUT);
 
 	// Load RAM base if available

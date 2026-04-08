@@ -19,10 +19,13 @@
 // constant loads from memory.
 //
 // GPR Pinning (callee-saved x19-x28):
-//   x19 = &cpuRegs            (EE CPU state base)
-//   x20 = &fpuRegs            (FPU state base)
-//   x21 = eeMem->Main         (EE RAM base for fastmem)
+//   x19 = &cpuRegs            (EE CPU state base; fpuRegs follows in cpuRegistersPack)
+//   x20 = (free)              (Phase A — was &fpuRegs; reserved for cycle delta in Phase B)
+//   x21 = eeMem->Main         (EE RAM base)
 //   x22 = recLUT              (block dispatch lookup table)
+//   x23 = vtlbdata.fastmem_base (fastmem direct dispatch base)
+//   x25 = RDELAYSLOTGPR       (carries branch condition across delay slot)
+//   x24, x26-x28 = (free)     (reserved for tiered GPR cache, Phase F)
 //
 // Scratch registers (caller-saved):
 //   x0-x3   = arguments / return value
@@ -34,12 +37,13 @@
 //   v8-v15  = lower 64b callee-saved (future: pin hot PS2 GPRs)
 //   v16-v28 = caller-saved temporaries
 //   v29-v31 = scratch (reserved by AsmHelpers)
+//
+// FPU state lives at x19 + FPUREGS_BASE (cpuRegistersPack packs cpuRegs then fpuRegs).
 
 namespace a64 = vixl::aarch64;
 
 // Pinned state registers
 #define RCPUSTATE    a64::x19
-#define RFPUSTATE    a64::x20
 #define RMEMBASE     a64::x21
 #define RRECLUT      a64::x22
 #define RFASTMEMBASE a64::x23
@@ -71,6 +75,10 @@ static constexpr s64 PC_OFFSET = offsetof(cpuRegisters, pc);
 static constexpr s64 CODE_OFFSET = offsetof(cpuRegisters, code);
 static constexpr s64 CYCLE_OFFSET = offsetof(cpuRegisters, cycle);
 static constexpr s64 NEXT_EVENT_CYCLE_OFFSET = offsetof(cpuRegisters, nextEventCycle);
+
+// fpuRegs lives immediately after cpuRegs in cpuRegistersPack — address it
+// from RCPUSTATE rather than burning a callee-saved register on its base.
+static constexpr s64 FPUREGS_BASE = offsetof(cpuRegistersPack, fpuRegs);
 
 // ============================================================================
 //  Instruction field extraction macros (match R5900 conventions)

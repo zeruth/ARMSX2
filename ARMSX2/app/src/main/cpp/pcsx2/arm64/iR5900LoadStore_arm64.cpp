@@ -18,8 +18,9 @@
 
 using namespace R5900;
 
-// FPR offset from RFPUSTATE (x20 = &fpuRegs) — for LWC1/SWC1
-static constexpr s64 FPR_OFFSET(int reg) { return offsetof(fpuRegisters, fpr) + reg * sizeof(FPRreg); }
+// FPR offset from RCPUSTATE (x19) — for LWC1/SWC1. fpuRegs lives at FPUREGS_BASE
+// inside cpuRegistersPack, so we address FPU state without a dedicated base reg.
+static constexpr s64 FPR_OFFSET(int reg) { return FPUREGS_BASE + offsetof(fpuRegisters, fpr) + reg * sizeof(FPRreg); }
 
 // Per-instruction interp stub toggle. Set to 1 = interp, 0 = native.
 #if defined(INTERP_LOAD) || defined(INTERP_EE)
@@ -339,13 +340,13 @@ void recLWC1()
 		const u8* code_start = armGetCurrentCodePointer();
 		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFASTMEMBASE, a64::x0));
 		armRecordFastmem(code_start, RXARG1.GetCode(), RSCRATCHGPR.GetCode(), 32, false, true, false);
-		armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Rt_)));
+		armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Rt_)));
 	}
 	else
 	{
 		armPreVtlbCall();
 		armEmitCall((const void*)&vtlb_memRead<mem32_t>);
-		armAsm->Str(a64::w0, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Rt_)));
+		armAsm->Str(a64::w0, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Rt_)));
 	}
 }
 #endif
@@ -500,7 +501,7 @@ void recSWC1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::SWC1); }
 void recSWC1()
 {
 	armComputeAddress();
-	armAsm->Ldr(a64::w1, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Rt_)));
+	armAsm->Ldr(a64::w1, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Rt_)));
 
 	if (armUseFastmem())
 	{

@@ -10,17 +10,18 @@
 
 using namespace R5900;
 
-// fpuRegisters field offsets from RFPUSTATE (x20 = &fpuRegs)
-static constexpr s64 FPR_OFFSET(int reg) { return offsetof(fpuRegisters, fpr) + reg * sizeof(FPRreg); }
-static constexpr s64 FPRC_OFFSET(int reg) { return offsetof(fpuRegisters, fprc) + reg * sizeof(u32); }
+// fpuRegisters field offsets from RCPUSTATE (x19) — fpuRegs lives at FPUREGS_BASE
+// inside cpuRegistersPack, so we can address FPU state without a dedicated base reg.
+static constexpr s64 FPR_OFFSET(int reg) { return FPUREGS_BASE + offsetof(fpuRegisters, fpr) + reg * sizeof(FPRreg); }
+static constexpr s64 FPRC_OFFSET(int reg) { return FPUREGS_BASE + offsetof(fpuRegisters, fprc) + reg * sizeof(u32); }
 
 // COP1 field aliases: _Fs_=bits 15:11, _Ft_=bits 20:16, _Fd_=bits 10:6
 #define _Fs_cop1_ _Rd_
 #define _Ft_cop1_ _Rt_
 #define _Fd_cop1_ _Sa_
 
-// FPU accumulator offset from RFPUSTATE
-static constexpr s64 ACC_OFFSET = offsetof(fpuRegisters, ACC);
+// FPU accumulator offset from RCPUSTATE
+static constexpr s64 ACC_OFFSET = FPUREGS_BASE + offsetof(fpuRegisters, ACC);
 
 // PS2 FPU constants
 static constexpr u32 PS2_POS_FMAX  = 0x7F7FFFFF;
@@ -119,7 +120,7 @@ void recMFC1()
 		return;
 
 	armDelConstReg(_Rt_);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
 }
 #endif
@@ -137,7 +138,7 @@ void recMTC1()
 {
 	// Load 32-bit from GPR[rt], store to fpr[fs]
 	armLoadGPR32(RWSCRATCH, _Rt_);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 }
 #endif
 
@@ -161,7 +162,7 @@ void recCFC1()
 	armDelConstReg(_Rt_);
 	if (_Fs_cop1_ == 31)
 	{
-		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
 	}
 	else if (_Fs_cop1_ == 0)
@@ -192,7 +193,7 @@ void recCTC1()
 		return;
 
 	armLoadGPR32(RWSCRATCH, _Rt_);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 }
 #endif
 
@@ -222,7 +223,7 @@ static void recBC1_helper(bool branchIfSet)
 	u32 fallthrough = pc + 4;
 
 	// Test FPU condition flag
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 	armAsm->Tst(RWSCRATCH, PS2_FPU_FLAG_C);
 	// Cset: 1 = taken. BC1F taken when flag clear (eq), BC1T when set (ne).
 	armAsm->Cset(RDELAYSLOTGPR, branchIfSet ? a64::ne : a64::eq);
@@ -257,7 +258,7 @@ static void recBC1_Likely_helper(bool branchIfSet)
 	armFlushConstRegs();
 
 	// Test FPU condition flag (bit 23)
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 
 	// If NOT taken, skip delay slot.
 	// BC1FL not-taken when C SET → Tbnz; BC1TL not-taken when C CLEAR → Tbz.
@@ -375,29 +376,29 @@ template<typename OpFunc>
 static void armFpuBinOp(int fd, int fs, int ft, OpFunc opFunc)
 {
 	// Load and clamp fs
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(fs)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(fs)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
 	// Load and clamp ft
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(ft)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(ft)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	// Operation
 	opFunc(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
 	// Clamp output and store
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(fd)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(fd)));
 }
 
 // Same but stores to ACC instead of fd
 template<typename OpFunc>
 static void armFpuBinOpAcc(int fs, int ft, OpFunc opFunc)
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(fs)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(fs)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(ft)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(ft)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	opFunc(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 }
 
 // ============================================================================
@@ -410,9 +411,9 @@ void recABS_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::ABS_S
 #else
 void recABS_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armAsm->And(RWSCRATCH, RWSCRATCH, 0x7FFFFFFF);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -422,9 +423,9 @@ void recNEG_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::NEG_S
 #else
 void recNEG_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armAsm->Eor(RWSCRATCH, RWSCRATCH, 0x80000000);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -436,8 +437,8 @@ void recMOV_S()
 {
 	if (_Fs_cop1_ == _Fd_cop1_)
 		return;
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -526,18 +527,18 @@ void recMADD_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::MADD
 #else
 void recMADD_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Ft_cop1_)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	armAsm->Fmul(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH1);
 	armAsm->Fadd(RFSCRATCH0, RFSCRATCH1, RFSCRATCH0);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -547,18 +548,18 @@ void recMSUB_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::MSUB
 #else
 void recMSUB_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Ft_cop1_)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	armAsm->Fmul(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH1);
 	armAsm->Fsub(RFSCRATCH0, RFSCRATCH1, RFSCRATCH0);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -568,16 +569,16 @@ void recMADDA_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::MAD
 #else
 void recMADDA_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Ft_cop1_)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	armAsm->Fmul(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 	armAsm->Fmov(RFSCRATCH1, RWSCRATCH);
 	armAsm->Fadd(RFSCRATCH0, RFSCRATCH1, RFSCRATCH0);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 }
 #endif
 
@@ -587,16 +588,16 @@ void recMSUBA_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::MSU
 #else
 void recMSUBA_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Ft_cop1_)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	armAsm->Fmul(RFSCRATCH0, RFSCRATCH0, RFSCRATCH1);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 	armAsm->Fmov(RFSCRATCH1, RWSCRATCH);
 	armAsm->Fsub(RFSCRATCH0, RFSCRATCH1, RFSCRATCH0);
 	armFpuClampOutput(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, ACC_OFFSET));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, ACC_OFFSET));
 }
 #endif
 
@@ -627,28 +628,28 @@ void recC_F()
 {
 	// Bic clears specific bits: 0x00800000 is a valid ARM64 logical immediate,
 	// ~0x00800000 is not — Bic saves the scratch+And pair.
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 	armAsm->Bic(RWSCRATCH, RWSCRATCH, PS2_FPU_FLAG_C);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 }
 #endif
 
 // ---- C_EQ / C_LT / C_LE ----
 static void armFpuCompare(a64::Condition cond)
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
-	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Ft_cop1_)));
+	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
 	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
 	armAsm->Fcmp(RFSCRATCH0, RFSCRATCH1);
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 	// Bic clears PS2_FPU_FLAG_C (0x00800000 is valid logical immediate; ~C is not).
 	armAsm->Bic(RWSCRATCH, RWSCRATCH, PS2_FPU_FLAG_C);
 	// Cset → 0 or 1, then Lsl(23) → 0 or PS2_FPU_FLAG_C.
 	armAsm->Cset(RWSCRATCH2, cond);
 	armAsm->Lsl(RWSCRATCH2, RWSCRATCH2, 23);
 	armAsm->Orr(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 }
 
 #if ISTUB_C_EQ
@@ -675,9 +676,9 @@ void recCVT_S() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::CVT_S
 #else
 void recCVT_S()
 {
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armAsm->Scvtf(RFSCRATCH0, RWSCRATCH);
-	armAsm->Str(RFSCRATCH0, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RFSCRATCH0, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
@@ -690,10 +691,10 @@ void recCVT_W()
 	// Clamp input (denormal → ±0, inf/NaN → ±Fmax), then convert to s32.
 	// ARM64 FCVTZS saturates: >MAX→0x7FFFFFFF, <MIN→0x80000000
 	// which matches PS2 CVT_W overflow behavior for clamped inputs.
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
+	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
 	armAsm->Fcvtzs(RWSCRATCH, RFSCRATCH0);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fd_cop1_)));
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fd_cop1_)));
 }
 #endif
 
