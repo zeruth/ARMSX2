@@ -260,18 +260,25 @@ REC_MMI_STUB(PEXCW)
 // ============================================================================
 
 // Load PS2 128-bit GPR into a NEON Q register.
-// Must commit any pending const-prop value first — const-prop only tracks the
-// lower 64 bits, so the upper half in memory is authoritative but the lower
-// half may be stale until armFlushConstReg writes it back.
+// Must commit any pending const-prop value AND any cached lower-64-bit GPR
+// value first — both only track the lower half, so the upper half in memory
+// is authoritative but the lower half may be stale.
 static __fi void armLoadGPR128(const a64::VRegister& dst, int gpr)
 {
 	armFlushConstReg(gpr);
+	armGprFlush(gpr);
 	armAsm->Ldr(dst, a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
 }
 
-// Store NEON Q register into PS2 128-bit GPR.
+// Store NEON Q register into PS2 128-bit GPR. Any cached lower-64-bit value
+// must be retired BEFORE the NEON store: armGprInvalidate flushes a dirty
+// cache slot to memory, and if we did that AFTER the NEON store it would
+// overwrite the new bytes with the stale lower-64. The slot's old value
+// would have been wasted anyway (the NEON store replaces it), but keeping
+// the order correct is what matters.
 static __fi void armStoreGPR128(int gpr, const a64::VRegister& src)
 {
+	armGprInvalidate(gpr);
 	armAsm->Str(src, a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
 }
 
@@ -309,8 +316,12 @@ void recPLZCW()
 {
 	if (!_Rd_) return;
 	armDelConstReg(_Rd_);
-	// Direct upper-half read bypasses armLoadGPR* — commit const first.
+	// Direct upper-half read bypasses armLoadGPR* — commit const AND any
+	// cached lower-64 first. The _Rd_ store overwrites the cached lower-64,
+	// so drop the cache slot (before the store, to avoid clobbering it).
 	armFlushConstReg(_Rs_);
+	armGprFlush(_Rs_);
+	armGprInvalidate(_Rd_);
 	armAsm->Ldr(RWSCRATCH,  a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rs_) + 0));
 	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rs_) + 4));
 	armAsm->Cls(RWSCRATCH,  RWSCRATCH);
@@ -957,6 +968,10 @@ void recPXOR()
 	armDelConstReg(_Rd_);
 	if (_Rs_ == _Rt_)
 	{
+		// Direct 128-bit zero store bypasses armStoreGPR128 — drop any
+		// cached lower-64 for _Rd_ first (it'd otherwise be flushed over
+		// our zero on the next invalidate).
+		armGprInvalidate(_Rd_);
 		armAsm->Stp(a64::xzr, a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
 		return;
 	}

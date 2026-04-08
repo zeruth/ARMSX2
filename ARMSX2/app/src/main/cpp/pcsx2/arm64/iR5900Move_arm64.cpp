@@ -86,8 +86,8 @@ void recMFHI()
 		return;
 
 	armDelConstReg(_Rd_);
-	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET));
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Ldr(rd, a64::MemOperand(RCPUSTATE, HI_OFFSET));
 }
 #endif
 
@@ -100,8 +100,8 @@ void recMFLO()
 		return;
 
 	armDelConstReg(_Rd_);
-	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET));
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Ldr(rd, a64::MemOperand(RCPUSTATE, LO_OFFSET));
 }
 #endif
 
@@ -115,8 +115,13 @@ void recMTHI() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MTHI); }
 #else
 void recMTHI()
 {
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (!_Rs_)
+	{
+		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+		return;
+	}
+	auto rs = armGprAlloc(_Rs_, false);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, HI_OFFSET));
 }
 #endif
 
@@ -125,8 +130,13 @@ void recMTLO() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MTLO); }
 #else
 void recMTLO()
 {
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	if (!_Rs_)
+	{
+		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+		return;
+	}
+	auto rs = armGprAlloc(_Rs_, false);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, LO_OFFSET));
 }
 #endif
 
@@ -144,8 +154,8 @@ void recMFHI1()
 		return;
 
 	armDelConstReg(_Rd_);
-	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Ldr(rd, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
 }
 #endif
 
@@ -158,8 +168,8 @@ void recMFLO1()
 		return;
 
 	armDelConstReg(_Rd_);
-	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Ldr(rd, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
 }
 #endif
 
@@ -173,8 +183,13 @@ void recMTHI1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MTHI1); }
 #else
 void recMTHI1()
 {
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
+	if (!_Rs_)
+	{
+		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
+		return;
+	}
+	auto rs = armGprAlloc(_Rs_, false);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
 }
 #endif
 
@@ -183,8 +198,13 @@ void recMTLO1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MTLO1); }
 #else
 void recMTLO1()
 {
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
+	if (!_Rs_)
+	{
+		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
+		return;
+	}
+	auto rs = armGprAlloc(_Rs_, false);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
 }
 #endif
 
@@ -201,8 +221,10 @@ void recMOVZ()
 	if (!_Rd_)
 		return;
 
-	// Conditional move: if rt==0, rd=rs. Must flush rd to memory since
-	// the move might not happen at runtime.
+	// Conditional move: if rt==0, rd=rs. The store is conditional, so we
+	// always go through memory for _Rd_ rather than allocating it as a
+	// cache slot (which would have undefined runtime contents on the skip
+	// path).
 	armDelConstReg(_Rd_);
 
 	// rt const nonzero: move never happens
@@ -212,17 +234,26 @@ void recMOVZ()
 	// rt const zero (or both const): unconditional move
 	if (GPR_IS_CONST1(_Rt_))
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		if (!_Rs_)
+		{
+			armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+		}
+		else
+		{
+			auto rs = armGprAlloc(_Rs_, false);
+			armAsm->Str(rs, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+		}
 		return;
 	}
 
-	// General case: conditional store
-	armLoadGPR64(RSCRATCHGPR, _Rt_);
+	// General case: conditional store. Allocate both rs and rt unconditionally
+	// before the branch so the cache slot table stays consistent across paths.
+	auto rt = armGprAlloc(_Rt_, false);
+	a64::Register rs =
+		(_Rs_ == 0) ? a64::Register(a64::xzr) : a64::Register(armGprAlloc(_Rs_, false));
 	a64::Label skip;
-	armAsm->Cbnz(RSCRATCHGPR, &skip);
-	armLoadGPR64(RSCRATCHGPR2, _Rs_);
-	armAsm->Str(RSCRATCHGPR2, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+	armAsm->Cbnz(rt, &skip);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
 	armAsm->Bind(&skip);
 }
 #endif
@@ -240,8 +271,9 @@ void recMOVN()
 	if (!_Rd_)
 		return;
 
-	// Conditional move: if rt!=0, rd=rs. Must flush rd to memory since
-	// the move might not happen at runtime.
+	// Conditional move: if rt!=0, rd=rs. The store is conditional, so we
+	// always go through memory for _Rd_ rather than allocating it as a
+	// cache slot.
 	armDelConstReg(_Rd_);
 
 	// rt const zero: move never happens
@@ -251,17 +283,26 @@ void recMOVN()
 	// rt const nonzero (or both const): unconditional move
 	if (GPR_IS_CONST1(_Rt_))
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		if (!_Rs_)
+		{
+			armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+		}
+		else
+		{
+			auto rs = armGprAlloc(_Rs_, false);
+			armAsm->Str(rs, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+		}
 		return;
 	}
 
-	// General case: conditional store
-	armLoadGPR64(RSCRATCHGPR, _Rt_);
+	// General case: conditional store. Allocate both rs and rt unconditionally
+	// before the branch so the cache slot table stays consistent across paths.
+	auto rt = armGprAlloc(_Rt_, false);
+	a64::Register rs =
+		(_Rs_ == 0) ? a64::Register(a64::xzr) : a64::Register(armGprAlloc(_Rs_, false));
 	a64::Label skip;
-	armAsm->Cbz(RSCRATCHGPR, &skip);
-	armLoadGPR64(RSCRATCHGPR2, _Rs_);
-	armAsm->Str(RSCRATCHGPR2, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
+	armAsm->Cbz(rt, &skip);
+	armAsm->Str(rs, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
 	armAsm->Bind(&skip);
 }
 #endif
@@ -280,9 +321,9 @@ void recMFSA()
 		return;
 
 	armDelConstReg(_Rd_);
-	// sa is u32, zero-extend to 64 via ldr w-reg (w4 load zero-extends into x4)
-	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, SA_OFFSET));
-	armStoreGPR64(RSCRATCHGPR, _Rd_); // RWSCRATCH is the W view of RSCRATCHGPR
+	auto rd = armGprAlloc(_Rd_, true);
+	// sa is u32; LDR W zero-extends to the full X register.
+	armAsm->Ldr(rd.W(), a64::MemOperand(RCPUSTATE, SA_OFFSET));
 }
 #endif
 
@@ -296,8 +337,13 @@ void recMTSA() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MTSA); }
 #else
 void recMTSA()
 {
-	armLoadGPR32(RWSCRATCH, _Rs_);
-	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, SA_OFFSET));
+	if (!_Rs_)
+	{
+		armAsm->Str(a64::wzr, a64::MemOperand(RCPUSTATE, SA_OFFSET));
+		return;
+	}
+	auto rs = armGprAlloc(_Rs_, false);
+	armAsm->Str(rs.W(), a64::MemOperand(RCPUSTATE, SA_OFFSET));
 }
 #endif
 
@@ -319,11 +365,11 @@ void recMTSAB()
 		return;
 	}
 
-	// w4 = GPR[rs].UL[0]
-	armLoadGPR32(RWSCRATCH, _Rs_);
-	// w4 = w4 & 0xF
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0xF);
-	// w4 = w4 ^ (imm & 0xF)
+	// (_Rs_ == 0 is always const 0 — handled by the const path above.)
+	auto rs = armGprAlloc(_Rs_, false);
+	// w_scratch = rs & 0xF
+	armAsm->And(RWSCRATCH, rs.W(), 0xF);
+	// w_scratch ^= (imm & 0xF)
 	u32 immMask = _ImmU_ & 0xF;
 	if (immMask)
 		armAsm->Eor(RWSCRATCH, RWSCRATCH, immMask);
@@ -349,15 +395,15 @@ void recMTSAH()
 		return;
 	}
 
-	// w4 = GPR[rs].UL[0]
-	armLoadGPR32(RWSCRATCH, _Rs_);
-	// w4 = w4 & 0x7
-	armAsm->And(RWSCRATCH, RWSCRATCH, 0x7);
-	// w4 = w4 ^ (imm & 0x7)
+	// (_Rs_ == 0 is always const 0 — handled by the const path above.)
+	auto rs = armGprAlloc(_Rs_, false);
+	// w_scratch = rs & 0x7
+	armAsm->And(RWSCRATCH, rs.W(), 0x7);
+	// w_scratch ^= (imm & 0x7)
 	u32 immMask = _ImmU_ & 0x7;
 	if (immMask)
 		armAsm->Eor(RWSCRATCH, RWSCRATCH, immMask);
-	// w4 = w4 << 1
+	// w_scratch <<= 1
 	armAsm->Lsl(RWSCRATCH, RWSCRATCH, 1);
 	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, SA_OFFSET));
 }
