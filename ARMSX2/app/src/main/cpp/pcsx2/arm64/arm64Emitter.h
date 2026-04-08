@@ -228,6 +228,85 @@ void armEmitFlushCycleBeforeCall();
 // Uses x9/x10 as scratch (caller-saved, free across the prior call).
 void armEmitReloadCycleAfterCall();
 
+// ============================================================================
+//  Tier 1 GPR cache — Phase C (infrastructure only, NOT wired to ops yet)
+// ============================================================================
+//
+// Within-block cache for MIPS GPRs in caller-saved ARM64 host scratch regs.
+// A cache slot binds one MIPS GPR (1..31) to a host register from a fixed
+// pool, plus dirty/sxw bookkeeping. Lifecycle:
+//
+//   - armGprCacheReset()    at block entry — all slots empty, pool free
+//   - armGprAlloc(gpr, w)   borrow the host reg holding `gpr`; load from
+//                           memory or const tracker if not cached. Sets
+//                           dirty when w == true.
+//   - armGprAllocTmp()      borrow an unbacked scratch from the same pool;
+//                           caller MUST release via armGprReleaseTmp.
+//   - armGprFlush(gpr)      if dirty, store to memory; slot stays loaded.
+//   - armGprInvalidate(gpr) flush + drop from cache.
+//   - armGprFlushAll()      flush every dirty slot; slots stay loaded.
+//                           Use at block exit.
+//   - armGprInvalidateAll() flush + drop everything; cache empty afterward.
+//                           Use before any BL out of the JIT.
+//
+// Pool: x7, x8, x11..x15 (7 regs). Excludes x0..x3 (call args),
+// x4..x6 (RSCRATCHGPR{,2,3}), x9..x10 (cycle helpers' scratch),
+// x16..x17 (vixl IP0/IP1), x19..x28 (pinned state), x29..x31.
+//
+// Const-prop interaction: armGprAlloc honors GPR_IS_CONST1 on read (emits
+// MOV-imm into the host slot). Writes leave the const tracker alone — the
+// caller is still responsible for GPR_DEL_CONST / armDelConstReg, same as
+// with armStoreGPR64.
+//
+// PHASE C STATUS: data structures + API + block-start reset only. No op
+// calls these helpers yet; armLoadGPR/armStoreGPR are unchanged. Phase D
+// will swap individual ops to use the cache.
+
+struct ArmGprCacheSlot
+{
+	u8   host_code; // 0xff = not cached
+	bool dirty;     // host value is newer than memory
+	bool sxw;       // host reg holds sign-extended-from-32 value (Phase D+)
+};
+
+extern ArmGprCacheSlot g_armGprCache[32];
+extern u16 g_armGprCachePoolUsed; // bitmask over kArmGprCachePool indices
+
+// Reset every slot to "not cached" and free the pool. Call at block entry.
+void armGprCacheReset();
+
+// True if MIPS GPR `gpr` currently lives in a host register.
+bool armGprIsCached(int gpr);
+
+// Borrow the host X-register backing MIPS GPR `gpr`.
+//   - Cached: returns the existing host reg.
+//   - Not cached: acquires a pool slot, then on read loads from memory or
+//     emits MOV-imm if const-tracked. On write the contents are undefined
+//     until the caller emits a store.
+//   - Pool full: spills the lowest-indexed cached MIPS GPR (Phase C uses
+//     a trivial eviction policy; Phase D will refine).
+// Marks the slot dirty when `for_write` is true. Callers can take .W() on
+// the result for 32-bit form.
+vixl::aarch64::XRegister armGprAlloc(int gpr, bool for_write);
+
+// Acquire an unbacked scratch from the cache pool. Caller MUST release.
+vixl::aarch64::XRegister armGprAllocTmp();
+
+// Release a scratch obtained via armGprAllocTmp. Returns the slot to the pool.
+void armGprReleaseTmp(const vixl::aarch64::Register& reg);
+
+// Flush a single dirty slot to memory; slot stays loaded.
+void armGprFlush(int gpr);
+
+// Flush + drop a single slot. Cache no longer holds `gpr`.
+void armGprInvalidate(int gpr);
+
+// Flush every dirty slot. Slots stay loaded; memory is now coherent.
+void armGprFlushAll();
+
+// Flush + drop every slot. Cache empty afterward; pool fully free.
+void armGprInvalidateAll();
+
 // Allocate space for a backpatch thunk from the rec code buffer.
 u8* recBeginThunk();
 u8* recEndThunk();

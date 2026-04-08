@@ -208,6 +208,210 @@ void armDelConstReg(int reg)
 }
 
 // ============================================================================
+//  Tier 1 GPR cache — Phase C plumbing (NOT wired to ops yet)
+// ============================================================================
+// See arm64Emitter.h for the API contract and rationale. This is pure
+// infrastructure: no instruction emitter currently calls armGprAlloc/Flush/
+// Invalidate. Block entry (recRecompile main loop) calls armGprCacheReset
+// so the slot table starts in a defined state once Phase D begins wiring
+// individual ops to the cache.
+
+ArmGprCacheSlot g_armGprCache[32];
+u16 g_armGprCachePoolUsed;
+
+// Pool of caller-saved host regs available for cache slots. Order is the
+// allocation order (front-first). Indices into this array are what get
+// stored in g_armGprCachePoolUsed.
+//   x4..x6  : RSCRATCHGPR{,2,3}            — used by per-instruction codegen
+//   x9..x10 : armEmit{Set,Flush,Reload}Cycle scratch
+//   x16..x17: vixl IP0/IP1
+//   x19..x28: pinned state regs (RCPUSTATE, RCYCLE, RMEMBASE, RRECLUT,
+//             RFASTMEMBASE, RDELAYSLOTGPR + reserved Phase D-H slots)
+// Everything else in 0..30 is either an arg (x0..x3), the FP/LR (x29/x30),
+// or already excluded above. That leaves x7, x8, x11..x15.
+static constexpr u8 kArmGprCachePool[] = {7, 8, 11, 12, 13, 14, 15};
+static constexpr int kArmGprCachePoolSize = static_cast<int>(sizeof(kArmGprCachePool) / sizeof(kArmGprCachePool[0]));
+static_assert(kArmGprCachePoolSize <= 16, "g_armGprCachePoolUsed bitmask is u16");
+
+// Linear scan: pool host_code → index in kArmGprCachePool. -1 if not in pool.
+static int armGprPoolIndex(u8 host_code)
+{
+	for (int i = 0; i < kArmGprCachePoolSize; i++)
+	{
+		if (kArmGprCachePool[i] == host_code)
+			return i;
+	}
+	return -1;
+}
+
+// Acquire a free pool slot (or evict the lowest-indexed cached MIPS GPR).
+// Returns the host register code. Marks the index used in g_armGprCachePoolUsed.
+static u8 armGprAcquirePoolSlot()
+{
+	for (int i = 0; i < kArmGprCachePoolSize; i++)
+	{
+		const u16 bit = static_cast<u16>(1u << i);
+		if (!(g_armGprCachePoolUsed & bit))
+		{
+			g_armGprCachePoolUsed |= bit;
+			return kArmGprCachePool[i];
+		}
+	}
+
+	// Pool full — evict the lowest-indexed cached MIPS GPR. Phase C uses
+	// the simplest possible policy; Phase D will refine (LRU / use-count).
+	for (int g = 1; g < 32; g++)
+	{
+		ArmGprCacheSlot& slot = g_armGprCache[g];
+		if (slot.host_code == 0xff)
+			continue;
+		const int slot_idx = armGprPoolIndex(slot.host_code);
+		if (slot_idx < 0)
+			continue;
+
+		if (slot.dirty)
+		{
+			armAsm->Str(a64::XRegister(slot.host_code),
+				a64::MemOperand(RCPUSTATE, GPR_OFFSET(g)));
+		}
+		const u8 host = slot.host_code;
+		slot.host_code = 0xff;
+		slot.dirty = false;
+		slot.sxw = false;
+		// The pool index bit stays set — we hand it straight to the new owner.
+		return host;
+	}
+
+	pxFailRel("armGprAcquirePoolSlot: no slots free and nothing to evict");
+	return 0xff;
+}
+
+void armGprCacheReset()
+{
+	for (int i = 0; i < 32; i++)
+	{
+		g_armGprCache[i].host_code = 0xff;
+		g_armGprCache[i].dirty = false;
+		g_armGprCache[i].sxw = false;
+	}
+	g_armGprCachePoolUsed = 0;
+}
+
+bool armGprIsCached(int gpr)
+{
+	return gpr >= 0 && gpr < 32 && g_armGprCache[gpr].host_code != 0xff;
+}
+
+a64::XRegister armGprAlloc(int gpr, bool for_write)
+{
+	pxAssertMsg(gpr > 0 && gpr < 32, "armGprAlloc: GPR0 has no cache slot (use xzr)");
+
+	ArmGprCacheSlot& slot = g_armGprCache[gpr];
+
+	if (slot.host_code != 0xff)
+	{
+		// Already cached — just hand back the existing host reg.
+		if (for_write)
+		{
+			slot.dirty = true;
+			slot.sxw = false;
+		}
+		return a64::XRegister(slot.host_code);
+	}
+
+	// Not cached — pick a pool slot and (for reads) populate it.
+	const u8 host = armGprAcquirePoolSlot();
+	a64::XRegister reg(host);
+
+	if (!for_write)
+	{
+		if (GPR_IS_CONST1(gpr))
+		{
+			// Const-tracked: emit MOV-imm. The const tracker is left alone;
+			// other read sites in this block can still see the const.
+			armAsm->Mov(reg, static_cast<u64>(g_cpuConstRegs[gpr].SD[0]));
+		}
+		else
+		{
+			armAsm->Ldr(reg, a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
+		}
+	}
+	// for_write: caller will store next; no load needed.
+
+	slot.host_code = host;
+	slot.dirty = for_write;
+	slot.sxw = false;
+	return reg;
+}
+
+a64::XRegister armGprAllocTmp()
+{
+	const u8 host = armGprAcquirePoolSlot();
+	return a64::XRegister(host);
+}
+
+void armGprReleaseTmp(const a64::Register& reg)
+{
+	const int idx = armGprPoolIndex(static_cast<u8>(reg.GetCode()));
+	pxAssertMsg(idx >= 0, "armGprReleaseTmp: register is not in the cache pool");
+	g_armGprCachePoolUsed &= ~static_cast<u16>(1u << idx);
+}
+
+void armGprFlush(int gpr)
+{
+	if (gpr <= 0 || gpr >= 32)
+		return;
+	ArmGprCacheSlot& slot = g_armGprCache[gpr];
+	if (slot.host_code == 0xff || !slot.dirty)
+		return;
+	armAsm->Str(a64::XRegister(slot.host_code),
+		a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
+	slot.dirty = false;
+}
+
+void armGprInvalidate(int gpr)
+{
+	if (gpr <= 0 || gpr >= 32)
+		return;
+	ArmGprCacheSlot& slot = g_armGprCache[gpr];
+	if (slot.host_code == 0xff)
+		return;
+	if (slot.dirty)
+	{
+		armAsm->Str(a64::XRegister(slot.host_code),
+			a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
+	}
+	const int idx = armGprPoolIndex(slot.host_code);
+	if (idx >= 0)
+		g_armGprCachePoolUsed &= ~static_cast<u16>(1u << idx);
+	slot.host_code = 0xff;
+	slot.dirty = false;
+	slot.sxw = false;
+}
+
+void armGprFlushAll()
+{
+	for (int g = 1; g < 32; g++)
+	{
+		ArmGprCacheSlot& slot = g_armGprCache[g];
+		if (slot.host_code != 0xff && slot.dirty)
+			armGprFlush(g);
+	}
+}
+
+void armGprInvalidateAll()
+{
+	for (int g = 1; g < 32; g++)
+	{
+		if (g_armGprCache[g].host_code != 0xff)
+			armGprInvalidate(g);
+	}
+	// Pool should be empty now; reset explicitly in case any tmps leaked.
+	// (Phase C: tmp leaks are a bug — Phase D ops MUST release every tmp.)
+	g_armGprCachePoolUsed = 0;
+}
+
+// ============================================================================
 //  Cycle delta helpers (Phase B)
 // ============================================================================
 // RCYCLE (x20) holds (s64)(cpuRegs.cycle - cpuRegs.nextEventCycle).
@@ -993,6 +1197,7 @@ StartRecomp:
 	g_pCurInstInfo = s_pInstCache;
 	g_cpuFlushedPC = false;
 	g_cpuFlushedCode = false;
+	armGprCacheReset();
 
 	while (!g_branch && pc < s_nEndBlock)
 	{
