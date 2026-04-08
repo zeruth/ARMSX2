@@ -79,7 +79,15 @@ void recADDU()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			(s64)(s32)(g_cpuConstRegs[_Rs_].UL[0] + g_cpuConstRegs[_Rt_].UL[0]);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (!_Rs_ && !_Rt_)
 	{
@@ -126,7 +134,15 @@ void recSUBU()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			(s64)(s32)(g_cpuConstRegs[_Rs_].UL[0] - g_cpuConstRegs[_Rt_].UL[0]);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (_Rs_ == _Rt_)
 	{
@@ -167,8 +183,15 @@ void recADDIU()
 	if (!_Rt_)
 		return;
 
-	// Const propagation disabled — causes downstream corruption (see SLL comment)
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].SD[0] =
+			(s64)(s32)(g_cpuConstRegs[_Rs_].UL[0] + (u32)(s32)_Imm_);
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 
 	const s32 imm = _Imm_;
 	if (imm == 0)
@@ -206,8 +229,15 @@ void recDADDU()
 	if (!_Rd_)
 		return;
 
-	// Const propagation disabled — causes downstream corruption (see SLL comment)
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] + g_cpuConstRegs[_Rt_].UD[0];
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (!_Rs_ && !_Rt_)
 	{
@@ -254,7 +284,15 @@ void recDSUBU()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] - g_cpuConstRegs[_Rt_].UD[0];
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (_Rs_ == _Rt_)
 	{
@@ -295,7 +333,15 @@ void recDADDIU()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] + (u64)(s64)(s32)_Imm_;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 
 	const s32 imm = _Imm_;
 	if (imm == 0)
@@ -332,7 +378,15 @@ void recAND()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] & g_cpuConstRegs[_Rt_].UD[0];
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (!_Rs_ || !_Rt_)
 	{
@@ -361,7 +415,15 @@ void recOR()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] | g_cpuConstRegs[_Rt_].UD[0];
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (!_Rs_ && !_Rt_)
 	{
@@ -397,7 +459,15 @@ void recXOR()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rs_].UD[0] ^ g_cpuConstRegs[_Rt_].UD[0];
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (_Rs_ == _Rt_)
 	{
@@ -432,7 +502,15 @@ void recNOR()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			~(g_cpuConstRegs[_Rs_].UD[0] | g_cpuConstRegs[_Rt_].UD[0]);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (!_Rs_ && !_Rt_)
 	{
@@ -479,7 +557,14 @@ void recANDI()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] = g_cpuConstRegs[_Rs_].UD[0] & (u64)_ImmU_;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 
 	if (_ImmU_ == 0)
 	{
@@ -501,7 +586,14 @@ void recORI()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] = g_cpuConstRegs[_Rs_].UD[0] | (u64)_ImmU_;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 	if (_ImmU_ == 0)
 	{
 		// ORI with 0 is a move
@@ -524,7 +616,14 @@ void recXORI()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] = g_cpuConstRegs[_Rs_].UD[0] ^ (u64)_ImmU_;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 	if (_ImmU_ == 0)
 	{
 		armLoadGPR64(RSCRATCHGPR, _Rs_);
@@ -552,7 +651,15 @@ void recSLT()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			(g_cpuConstRegs[_Rs_].SD[0] < g_cpuConstRegs[_Rt_].SD[0]) ? 1 : 0;
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (_Rs_ == _Rt_)
 	{
@@ -577,7 +684,15 @@ void recSLTU()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			(g_cpuConstRegs[_Rs_].UD[0] < g_cpuConstRegs[_Rt_].UD[0]) ? 1 : 0;
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 
 	if (_Rs_ == _Rt_)
 	{
@@ -607,7 +722,15 @@ void recSLTI()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] =
+			(g_cpuConstRegs[_Rs_].SD[0] < (s64)(s32)_Imm_) ? 1 : 0;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 	armLoadGPR64(RSCRATCHGPR, _Rs_);
 	// VIXL MacroAssembler handles Cmp with immediate optimally:
 	// small positive → cmp, small negative → cmn, else → mov tmp + cmp
@@ -625,7 +748,15 @@ void recSLTIU()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		g_cpuConstRegs[_Rt_].UD[0] =
+			(g_cpuConstRegs[_Rs_].UD[0] < (u64)(s64)(s32)_Imm_) ? 1 : 0;
+		GPR_SET_CONST(_Rt_);
+		return;
+	}
+
+	armDelConstReg(_Rt_);
 	armLoadGPR64(RSCRATCHGPR, _Rs_);
 	armAsm->Cmp(RSCRATCHGPR, static_cast<s64>(_Imm_));
 	armAsm->Cset(RSCRATCHGPR, a64::lo);

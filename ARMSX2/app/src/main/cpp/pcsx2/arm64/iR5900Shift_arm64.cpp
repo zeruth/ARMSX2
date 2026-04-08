@@ -63,11 +63,14 @@ void recSLL()
 	if (!_Rd_)
 		return;
 
-	// NOTE: const propagation intentionally disabled for SLL.
-	// The const value is correct, but marking Rd as const causes downstream
-	// const-chain corruption (garbled BIOS date/time). Root cause unknown.
-	// Codegen-only path works correctly.
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] = (s64)(s32)(g_cpuConstRegs[_Rt_].UL[0] << _Sa_);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	if (_Sa_)
 		armAsm->Lsl(RWSCRATCH, RWSCRATCH, _Sa_);
@@ -88,7 +91,14 @@ void recSRL()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] = (s64)(s32)(g_cpuConstRegs[_Rt_].UL[0] >> _Sa_);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	if (_Sa_)
 		armAsm->Lsr(RWSCRATCH, RWSCRATCH, _Sa_);
@@ -109,7 +119,14 @@ void recSRA()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] = (s64)((s32)g_cpuConstRegs[_Rt_].UL[0] >> _Sa_);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	if (_Sa_)
 		armAsm->Asr(RWSCRATCH, RWSCRATCH, _Sa_);
@@ -130,7 +147,15 @@ void recSLLV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			(s64)(s32)(g_cpuConstRegs[_Rt_].UL[0] << (g_cpuConstRegs[_Rs_].UL[0] & 0x1F));
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
 	armAsm->Lsl(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
@@ -151,7 +176,15 @@ void recSRLV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			(s64)(s32)(g_cpuConstRegs[_Rt_].UL[0] >> (g_cpuConstRegs[_Rs_].UL[0] & 0x1F));
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
 	armAsm->Lsr(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
@@ -172,7 +205,15 @@ void recSRAV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			(s64)((s32)g_cpuConstRegs[_Rt_].UL[0] >> (g_cpuConstRegs[_Rs_].UL[0] & 0x1F));
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
 	armAsm->Asr(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
@@ -193,7 +234,14 @@ void recDSLL()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] = g_cpuConstRegs[_Rt_].UD[0] << _Sa_;
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	if (_Sa_)
 		armAsm->Lsl(RSCRATCHGPR, RSCRATCHGPR, _Sa_);
@@ -214,7 +262,14 @@ void recDSRL()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] = g_cpuConstRegs[_Rt_].UD[0] >> _Sa_;
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	if (_Sa_)
 		armAsm->Lsr(RSCRATCHGPR, RSCRATCHGPR, _Sa_);
@@ -235,7 +290,14 @@ void recDSRA()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] = g_cpuConstRegs[_Rt_].SD[0] >> _Sa_;
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	if (_Sa_)
 		armAsm->Asr(RSCRATCHGPR, RSCRATCHGPR, _Sa_);
@@ -256,7 +318,14 @@ void recDSLL32()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] = g_cpuConstRegs[_Rt_].UD[0] << (_Sa_ + 32);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armAsm->Lsl(RSCRATCHGPR, RSCRATCHGPR, _Sa_ + 32);
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
@@ -276,7 +345,14 @@ void recDSRL32()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] = g_cpuConstRegs[_Rt_].UD[0] >> (_Sa_ + 32);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armAsm->Lsr(RSCRATCHGPR, RSCRATCHGPR, _Sa_ + 32);
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
@@ -296,7 +372,14 @@ void recDSRA32()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST1(_Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] = g_cpuConstRegs[_Rt_].SD[0] >> (_Sa_ + 32);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armAsm->Asr(RSCRATCHGPR, RSCRATCHGPR, _Sa_ + 32);
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
@@ -316,7 +399,15 @@ void recDSLLV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rt_].UD[0] << (g_cpuConstRegs[_Rs_].UL[0] & 0x3F);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armLoadGPR64(RSCRATCHGPR2, _Rs_);
 	armAsm->Lsl(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
@@ -337,7 +428,15 @@ void recDSRLV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].UD[0] =
+			g_cpuConstRegs[_Rt_].UD[0] >> (g_cpuConstRegs[_Rs_].UL[0] & 0x3F);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armLoadGPR64(RSCRATCHGPR2, _Rs_);
 	armAsm->Lsr(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
@@ -358,7 +457,15 @@ void recDSRAV()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	if (GPR_IS_CONST2(_Rs_, _Rt_))
+	{
+		g_cpuConstRegs[_Rd_].SD[0] =
+			g_cpuConstRegs[_Rt_].SD[0] >> (g_cpuConstRegs[_Rs_].UL[0] & 0x3F);
+		GPR_SET_CONST(_Rd_);
+		return;
+	}
+
+	armDelConstReg(_Rd_);
 	armLoadGPR64(RSCRATCHGPR, _Rt_);
 	armLoadGPR64(RSCRATCHGPR2, _Rs_);
 	armAsm->Asr(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);

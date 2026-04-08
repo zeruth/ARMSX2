@@ -111,6 +111,8 @@ void recQMTC2()
         return;
     }
     // Native 128-bit copy: cpuRegs.GPR[_Rt_] → VU0.VF[_Rd_]
+    // Commit any pending const-prop value before the direct 128-bit LDR.
+    armFlushConstReg(_Rt_);
     armAsm->Ldr(a64::q0, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
     armAsm->Mov(RSCRATCHGPR, reinterpret_cast<uintptr_t>(&VU0.VF[_Rd_]));
     armAsm->Str(a64::q0, a64::MemOperand(RSCRATCHGPR));

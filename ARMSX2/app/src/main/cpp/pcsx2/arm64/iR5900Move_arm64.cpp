@@ -63,10 +63,12 @@ void recLUI()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
-	s64 val = (s64)(s32)(cpuRegs.code << 16);
-	armAsm->Mov(RSCRATCHGPR, static_cast<u64>(val));
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
+	// LUI is always a compile-time constant. Track it via const-prop instead
+	// of materializing now — downstream LUI;ORI / LUI;ADDIU folds at compile
+	// time and the whole address-load idiom becomes a Mov-imm later.
+	const s64 val = (s64)(s32)(cpuRegs.code << 16);
+	g_cpuConstRegs[_Rt_].SD[0] = val;
+	GPR_SET_CONST(_Rt_);
 }
 #endif
 
@@ -83,7 +85,7 @@ void recMFHI()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET));
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
 }
@@ -97,7 +99,7 @@ void recMFLO()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET));
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
 }
@@ -141,7 +143,7 @@ void recMFHI1()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, HI_OFFSET + 8));
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
 }
@@ -155,7 +157,7 @@ void recMFLO1()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LO_OFFSET + 8));
 	armStoreGPR64(RSCRATCHGPR, _Rd_);
 }
@@ -201,7 +203,7 @@ void recMOVZ()
 
 	// Conditional move: if rt==0, rd=rs. Must flush rd to memory since
 	// the move might not happen at runtime.
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	// rt const nonzero: move never happens
 	if (GPR_IS_CONST1(_Rt_) && g_cpuConstRegs[_Rt_].UD[0] != 0)
@@ -240,7 +242,7 @@ void recMOVN()
 
 	// Conditional move: if rt!=0, rd=rs. Must flush rd to memory since
 	// the move might not happen at runtime.
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	// rt const zero: move never happens
 	if (GPR_IS_CONST1(_Rt_) && g_cpuConstRegs[_Rt_].UD[0] == 0)
@@ -277,10 +279,10 @@ void recMFSA()
 	if (!_Rd_)
 		return;
 
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	// sa is u32, zero-extend to 64 via ldr w-reg (w4 load zero-extends into x4)
 	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, SA_OFFSET));
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	armStoreGPR64(RSCRATCHGPR, _Rd_); // RWSCRATCH is the W view of RSCRATCHGPR
 }
 #endif
 

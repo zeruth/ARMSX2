@@ -87,7 +87,7 @@ void recMFC0()
 		if (!_Rt_)
 			return;
 
-		GPR_DEL_CONST(_Rt_);
+		armDelConstReg(_Rt_);
 		armStoreGPR64SignExt32(RWSCRATCH2, _Rt_);
 		return;
 	}
@@ -95,7 +95,7 @@ void recMFC0()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	armDelConstReg(_Rt_);
 
 	switch (_Rd_)
 	{

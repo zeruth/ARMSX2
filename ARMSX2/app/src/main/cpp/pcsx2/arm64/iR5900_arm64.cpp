@@ -167,6 +167,46 @@ void armFlushConstRegs()
 	}
 }
 
+// Flush a single constant register to memory if it has a const value that
+// hasn't been written back yet. No-op otherwise. Used by call sites that
+// bypass armLoadGPR* and read GPR memory directly (128-bit MMI/QMTC2 loads,
+// PLZCW upper-half access) so the const value is coherent before the read.
+void armFlushConstReg(int reg)
+{
+	if (reg <= 0 || reg >= 32)
+		return;
+	const u32 bit = 1u << reg;
+	if (!(g_cpuHasConstReg & bit) || (g_cpuFlushedConstReg & bit))
+		return;
+
+	const s64 val = g_cpuConstRegs[reg].SD[0];
+	if (val == 0)
+	{
+		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(reg)));
+	}
+	else
+	{
+		armAsm->Mov(RSCRATCHGPR, static_cast<u64>(val));
+		armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, GPR_OFFSET(reg)));
+	}
+	g_cpuFlushedConstReg |= bit;
+}
+
+// Drop a register's const tracking AFTER first committing its value to memory.
+// The early `GPR_DEL_CONST(_Rd_)` pattern at the top of an op is unsafe when
+// _Rd_ aliases _Rs_/_Rt_: clearing the const flag causes the subsequent
+// armLoadGPR* on the operand to fall through to an LDR that reads stale
+// memory (the const value never reached cpuRegs.GPR). Flushing first ensures
+// memory is coherent regardless of whether _Rd_ aliases an operand. The
+// follow-up armStoreGPR* still overwrites _Rd_; the wasted store is
+// harmless. Use this anywhere you would have written GPR_DEL_CONST(_Rd_)
+// before loading source operands.
+void armDelConstReg(int reg)
+{
+	armFlushConstReg(reg);
+	GPR_DEL_CONST(reg);
+}
+
 void armLoadGPR64(const a64::Register& dst, int gpr)
 {
 	if (gpr == 0)

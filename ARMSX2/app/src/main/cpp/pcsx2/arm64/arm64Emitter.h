@@ -129,6 +129,20 @@ extern bool g_cpuFlushedPC, g_cpuFlushedCode, g_recompilingDelaySlot, g_maySigna
 // Flush all constant registers that haven't been written back to memory yet
 void armFlushConstRegs();
 
+// Flush a single constant register to memory if it has a const value not yet
+// committed. No-op otherwise. Use this before any direct GPR memory LDR that
+// bypasses armLoadGPR* (e.g. 128-bit MMI loads, upper-half reads), so the
+// const value is coherent in cpuRegs.GPR before the read.
+void armFlushConstReg(int reg);
+
+// Like GPR_DEL_CONST, but first commits any pending const value to memory.
+// Use this in place of an early GPR_DEL_CONST(_Rd_) at the top of an op when
+// _Rd_ may alias _Rs_/_Rt_: a plain GPR_DEL_CONST would clear the const flag,
+// causing the next armLoadGPR* on the (now-aliased) operand to read STALE
+// memory. Flushing first guarantees the operand load — whether it goes
+// through the const-Mov path or the LDR path — sees the latest value.
+void armDelConstReg(int reg);
+
 // Emit code to load a PS2 GPR (64-bit lower half) into an ARM64 register.
 // If the GPR is constant, emits a MOV immediate. Otherwise loads from cpuRegs.
 void armLoadGPR64(const a64::Register& dst, int gpr);
@@ -179,6 +193,7 @@ u8* recEndThunk();
 //#define INTERP_LOAD      // LB, LBU, LH, LHU, LW, LWU, LD, LQ, LWL/R, LDL/R, LWC1, LQC2
 //#define INTERP_STORE     // SB, SH, SW, SD, SQ, SWL/R, SDL/R, SWC1, SQC2
 //#define INTERP_TRAP      // TGEI, TGEIU, TLTI, TLTIU, TEQI, TNEI, TGE, TGEU, TLT, TLTU, TEQ, TNE
+//#define INTERP_MULTDIV
 
 //VU0
 // Pair-level bisect: comment out a line to force that class of pairs to fall back to vu0Exec.

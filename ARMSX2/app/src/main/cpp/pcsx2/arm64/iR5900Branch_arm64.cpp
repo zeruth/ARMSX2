@@ -185,6 +185,14 @@ static void recBranch_GPR64_Likely(a64::Condition cond, int rs, int rt, u32 bran
 		return;
 	}
 
+	// Flush unconditionally up front — the not-taken path also exits the block,
+	// so any unflushed const-tracked GPRs must be written to memory regardless
+	// of which side of the branch we take. Const tracking itself is preserved
+	// (only the flushed bit is set), so subsequent armLoadGPR* still uses
+	// Mov-imm for any const operands. Flushing before the load also protects
+	// RSCRATCHGPR, which armFlushConstRegs uses internally as scratch.
+	armFlushConstRegs();
+
 	armLoadGPR64(RSCRATCHGPR, rs);
 	if (rt == 0)
 		armAsm->Cmp(RSCRATCHGPR, 0);
@@ -199,7 +207,6 @@ static void recBranch_GPR64_Likely(a64::Condition cond, int rs, int rt, u32 bran
 	armAsm->B(&skipDelaySlot, a64::InvertCondition(cond));
 
 	// Condition met: execute delay slot, then branch to target
-	armFlushConstRegs();
 	recompileNextInstruction(true, false);
 	armFlushConstRegs();
 	armAsm->Mov(RWSCRATCH, branchTarget);
@@ -242,6 +249,12 @@ static void recBranch_GPR64_vs_Zero_Likely(a64::Condition cond, int rs, u32 bran
 		return;
 	}
 
+	// Flush unconditionally up front — see recBranch_GPR64_Likely for rationale.
+	// Both paths exit the block, so consts must hit memory before either side.
+	// Flushing before the load also protects RSCRATCHGPR (used internally by
+	// the flush as scratch) so the Tbz/Tbnz below sees the loaded value.
+	armFlushConstRegs();
+
 	armLoadGPR64(RSCRATCHGPR, rs);
 
 	// For lt/ge, use Tbz/Tbnz to test sign bit directly (1 instruction vs 2)
@@ -257,7 +270,6 @@ static void recBranch_GPR64_vs_Zero_Likely(a64::Condition cond, int rs, u32 bran
 	}
 
 	// Condition met: execute delay slot, then branch to target
-	armFlushConstRegs();
 	recompileNextInstruction(true, false);
 	armFlushConstRegs();
 	armAsm->Mov(RWSCRATCH, branchTarget);

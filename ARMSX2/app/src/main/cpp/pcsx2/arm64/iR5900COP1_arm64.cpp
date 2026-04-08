@@ -118,7 +118,7 @@ void recMFC1()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	armDelConstReg(_Rt_);
 	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPR_OFFSET(_Fs_cop1_)));
 	armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
 }
@@ -158,7 +158,7 @@ void recCFC1()
 	if (!_Rt_)
 		return;
 
-	GPR_DEL_CONST(_Rt_);
+	armDelConstReg(_Rt_);
 	if (_Fs_cop1_ == 31)
 	{
 		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
@@ -247,6 +247,15 @@ static void recBC1_Likely_helper(bool branchIfSet)
 	u32 branchTarget = ((s32)_Imm_ * 4) + pc;
 	u32 fallthrough = pc + 4;
 
+	// Flush unconditionally up front — both paths exit the block, so any
+	// unflushed const-tracked GPRs must hit memory regardless of which side
+	// of the branch we take. Const tracking is preserved (only the flushed
+	// bit is set), so subsequent armLoadGPR* in the delay slot still uses
+	// Mov-imm for any const operands. Flushing before the Ldr also protects
+	// RWSCRATCH (the W view of RSCRATCHGPR, which armFlushConstRegs uses
+	// internally as scratch) so the Tbz/Tbnz below sees the FPU C flag.
+	armFlushConstRegs();
+
 	// Test FPU condition flag (bit 23)
 	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RFPUSTATE, FPRC_OFFSET(31)));
 
@@ -260,7 +269,6 @@ static void recBC1_Likely_helper(bool branchIfSet)
 		armAsm->Tbnz(RWSCRATCH, 23, &skipDelaySlot); // BC1FL: skip when C set
 
 	// Taken: execute delay slot, branch to target
-	armFlushConstRegs();
 	recompileNextInstruction(true, false);
 	armFlushConstRegs();
 	armAsm->Mov(RWSCRATCH, branchTarget);

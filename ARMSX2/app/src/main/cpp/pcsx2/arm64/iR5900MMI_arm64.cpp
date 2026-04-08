@@ -260,8 +260,12 @@ REC_MMI_STUB(PEXCW)
 // ============================================================================
 
 // Load PS2 128-bit GPR into a NEON Q register.
+// Must commit any pending const-prop value first — const-prop only tracks the
+// lower 64 bits, so the upper half in memory is authoritative but the lower
+// half may be stale until armFlushConstReg writes it back.
 static __fi void armLoadGPR128(const a64::VRegister& dst, int gpr)
 {
+	armFlushConstReg(gpr);
 	armAsm->Ldr(dst, a64::MemOperand(RCPUSTATE, GPR_OFFSET(gpr)));
 }
 
@@ -276,7 +280,7 @@ template<typename OpFunc>
 static void armMMIBinOp(OpFunc opFunc)
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rs_);
 	armLoadGPR128(RVMMI1, _Rt_);
 	opFunc();
@@ -288,7 +292,7 @@ template<typename OpFunc>
 static void armMMIUnaryOp(OpFunc opFunc)
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	opFunc();
 	armStoreGPR128(_Rd_, RVMMI0);
@@ -304,7 +308,9 @@ void recPLZCW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PLZCW)
 void recPLZCW()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
+	// Direct upper-half read bypasses armLoadGPR* — commit const first.
+	armFlushConstReg(_Rs_);
 	armAsm->Ldr(RWSCRATCH,  a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rs_) + 0));
 	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rs_) + 4));
 	armAsm->Cls(RWSCRATCH,  RWSCRATCH);
@@ -640,7 +646,7 @@ void recPADSBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PADSB
 void recPADSBH()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rs_);
 	armLoadGPR128(RVMMI1, _Rt_);
 	armAsm->Sub(a64::v2.V8H(), a64::v0.V8H(), a64::v1.V8H());
@@ -680,7 +686,7 @@ void recPSLLVW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PSLLV
 void recPSLLVW()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Movi(a64::v2.V4S(), 31);
@@ -698,7 +704,7 @@ void recPSRLVW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PSRLV
 void recPSRLVW()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Movi(a64::v2.V4S(), 31);
@@ -734,7 +740,7 @@ void recPMADDW()
 	// new LO.SD[i] = sext32(result[i] & 0xFFFFFFFF)
 	// new HI.SD[i] = sext32(result[i] >> 32)
 	// Rd.SD[i]     = result[i]   (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	// Extract words 0 and 2 into the lower 2×32 lanes
@@ -767,7 +773,7 @@ void recPMSUBW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUB
 void recPMSUBW()
 {
 	// Same as PMADDW but result = acc - prod
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());
@@ -797,7 +803,7 @@ void recPMFHI() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMFHI)
 void recPMFHI()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RVMMI0, a64::MemOperand(RCPUSTATE, HI_OFFSET));
 	armStoreGPR128(_Rd_, RVMMI0);
 }
@@ -809,7 +815,7 @@ void recPMFLO() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMFLO)
 void recPMFLO()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armAsm->Ldr(RVMMI0, a64::MemOperand(RCPUSTATE, LO_OFFSET));
 	armStoreGPR128(_Rd_, RVMMI0);
 }
@@ -821,7 +827,7 @@ void recPINTH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PINTH)
 void recPINTH()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Ext(a64::v2.V16B(), a64::v1.V16B(), a64::v1.V16B(), 8);
@@ -839,7 +845,7 @@ void recPMULTW()
 	// LO.SD[i] = sext32(prod[i] & 0xFFFFFFFF)
 	// HI.SD[i] = sext32(prod[i] >> 32)
 	// Rd.SD[i] = prod[i]  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S()); // {Rs[0],Rs[2],Rs[0],Rs[2]}
@@ -866,7 +872,7 @@ void recPCPYLD() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PCPYL
 void recPCPYLD()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Ins(a64::v0.D(), 1, a64::v1.D(), 0);
@@ -883,7 +889,7 @@ void recPMADDH()
 	// LO += {p0,p1,p4,p5}  (32-bit wrapping add per element)
 	// HI += {p2,p3,p6,p7}
 	// Rd = {new_LO[0], new_HI[0], new_LO[2], new_HI[2]}  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
@@ -916,7 +922,7 @@ void recPHMADH()
 	// LO = {p0+p1, p1, p4+p5, p5}
 	// HI = {p2+p3, p3, p6+p7, p7}
 	// Rd = {p0+p1, p2+p3, p4+p5, p6+p7}  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
@@ -948,7 +954,7 @@ void recPXOR() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PXOR); 
 void recPXOR()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	if (_Rs_ == _Rt_)
 	{
 		armAsm->Stp(a64::xzr, a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rd_)));
@@ -964,7 +970,7 @@ void recPMSUBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUB
 void recPMSUBH()
 {
 	// Same as PMADDH but subtracts: LO -= {p0,p1,p4,p5}, HI -= {p2,p3,p6,p7}
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());
@@ -995,7 +1001,7 @@ void recPHMSBH()
 	// LO = {p1-p0, ~p1, p5-p4, ~p5}
 	// HI = {p3-p2, ~p3, p7-p6, ~p7}
 	// Rd = {p1-p0, p3-p2, p5-p4, p7-p6}  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
@@ -1045,7 +1051,7 @@ void recPMULTH()
 	// p[i] = Rs.SS[i] * Rt.SS[i]  (signed 16×16→32, 8 products)
 	// LO = {p0,p1,p4,p5},  HI = {p2,p3,p6,p7}
 	// Rd = {p0,p2,p4,p6}  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
@@ -1115,7 +1121,7 @@ void recPMADDUW()
 	// new LO.SD[i] = sext32(result[i] & 0xFFFFFFFF)
 	// new HI.SD[i] = sext32(result[i] >> 32)
 	// Rd.UD[i] = result[i]  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());
@@ -1145,7 +1151,7 @@ void recPSRAVW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PSRAV
 void recPSRAVW()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Movi(a64::v2.V4S(), 31);
@@ -1184,7 +1190,7 @@ void recPINTEH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PINTE
 void recPINTEH()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rt_);
 	armLoadGPR128(RVMMI1, _Rs_);
 	armAsm->Uzp1(a64::v2.V8H(), a64::v0.V8H(), a64::v1.V8H());
@@ -1200,7 +1206,7 @@ void recPCPYUD() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PCPYU
 void recPCPYUD()
 {
 	if (!_Rd_) return;
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(RVMMI0, _Rs_);
 	armLoadGPR128(RVMMI1, _Rt_);
 	armAsm->Ins(a64::v0.D(), 0, a64::v0.D(), 1);
@@ -1236,7 +1242,7 @@ void recPMULTUW()
 	// LO.SD[i] = sext32(prod[i] & 0xFFFFFFFF)
 	// HI.SD[i] = sext32(prod[i] >> 32)
 	// Rd.UD[i] = prod[i]  (if Rd)
-	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 	armLoadGPR128(a64::q0, _Rs_);
 	armLoadGPR128(a64::q1, _Rt_);
 	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());

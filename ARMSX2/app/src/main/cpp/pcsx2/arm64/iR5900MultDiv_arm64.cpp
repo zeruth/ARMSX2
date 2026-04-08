@@ -100,7 +100,7 @@ void recMULT() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MULT); }
 #else
 void recMULT()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	armLoadGPR32(RWSCRATCH, _Rs_);
 	armLoadGPR32(RWSCRATCH2, _Rt_);
@@ -118,7 +118,7 @@ void recMULTU() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MULTU); }
 #else
 void recMULTU()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	armLoadGPR32(RWSCRATCH, _Rs_);
 	armLoadGPR32(RWSCRATCH2, _Rt_);
@@ -136,7 +136,7 @@ void recMULT1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MULT1); }
 #else
 void recMULT1()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	armLoadGPR32(RWSCRATCH, _Rs_);
 	armLoadGPR32(RWSCRATCH2, _Rt_);
@@ -154,7 +154,7 @@ void recMULTU1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MULTU1); }
 #else
 void recMULTU1()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	armLoadGPR32(RWSCRATCH, _Rs_);
 	armLoadGPR32(RWSCRATCH2, _Rt_);
@@ -174,7 +174,7 @@ void recMADD() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MADD); }
 #else
 void recMADD()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	emitLoadMaddAccumulator(RSCRATCHGPR, 0);                       // x4 = acc (x5 scratch dead after this)
 	armLoadGPR32(RWSCRATCH2, _Rs_);                                // w5 = rs
@@ -193,7 +193,7 @@ void recMADDU() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MADDU); }
 #else
 void recMADDU()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	emitLoadMaddAccumulator(RSCRATCHGPR, 0);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
@@ -214,7 +214,7 @@ void recMADD1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MADD1); }
 #else
 void recMADD1()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	emitLoadMaddAccumulator(RSCRATCHGPR, 8);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
@@ -233,7 +233,7 @@ void recMADDU1() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MADDU1); }
 #else
 void recMADDU1()
 {
-	GPR_DEL_CONST(_Rd_);
+	armDelConstReg(_Rd_);
 
 	emitLoadMaddAccumulator(RSCRATCHGPR, 8);
 	armLoadGPR32(RWSCRATCH2, _Rs_);
