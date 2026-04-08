@@ -29,6 +29,11 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc,
 		if (address_register != RWARG1.GetCode())
 			armAsm->Mov(RWARG1, a64::WRegister(address_register));
 
+		// Flush RCYCLE → cpuRegs.cycle so the slow path sees the correct
+		// "now" (Phase B keeps the JIT-current cycle pinned in RCYCLE).
+		// Done AFTER the address move so x9 can't clobber address_register.
+		armEmitFlushCycleBeforeCall();
+
 		switch (size_in_bits)
 		{
 			case 8:  armEmitCall((const void*)&vtlb_memRead<mem8_t>);  break;
@@ -72,6 +77,10 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc,
 				armAsm->Mov(RWARG1, a64::WRegister(address_register));
 		}
 
+		// Flush RCYCLE → cpuRegs.cycle so the slow path sees the correct
+		// "now". Done AFTER the arg moves so x9 can't clobber x0/x1's source.
+		armEmitFlushCycleBeforeCall();
+
 		switch (size_in_bits)
 		{
 			case 8:  armEmitCall((const void*)&vtlb_memWrite<mem8_t>);  break;
@@ -81,6 +90,13 @@ void vtlb_DynBackpatchLoadStore(uptr code_address, u32 code_size, u32 guest_pc,
 			default: pxFailRel("Unexpected fastmem store size"); break;
 		}
 	}
+
+	// vtlb_mem* may have ended up in an MMIO handler that called CPU_INT,
+	// mutating cpuRegs.nextEventCycle. Phase B's pinned RCYCLE (x20) was
+	// anchored to the OLD nec — re-derive it from memory before resuming
+	// the JIT-compiled block. Uses x9/x10 as scratch so the load result
+	// in x0 (already moved to data_register above) stays untouched.
+	armEmitReloadCycleAfterCall();
 
 	// Jump back to the instruction after the original fastmem access
 	armEmitJmp(reinterpret_cast<const void*>(code_address + code_size));

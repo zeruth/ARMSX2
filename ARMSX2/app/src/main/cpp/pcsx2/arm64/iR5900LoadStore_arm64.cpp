@@ -155,7 +155,9 @@ void recLB()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem8_t>);
+		armEmitReloadCycleAfterCall();
 		armAsm->Sxtb(a64::x0, a64::w0);
 		armStoreGPR64(a64::x0, _Rt_);
 	}
@@ -183,7 +185,9 @@ void recLBU()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem8_t>);
+		armEmitReloadCycleAfterCall();
 		armStoreGPR64(a64::x0, _Rt_);
 	}
 }
@@ -210,7 +214,9 @@ void recLH()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem16_t>);
+		armEmitReloadCycleAfterCall();
 		armAsm->Sxth(a64::x0, a64::w0);
 		armStoreGPR64(a64::x0, _Rt_);
 	}
@@ -238,7 +244,9 @@ void recLHU()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem16_t>);
+		armEmitReloadCycleAfterCall();
 		armStoreGPR64(a64::x0, _Rt_);
 	}
 }
@@ -265,7 +273,9 @@ void recLW()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem32_t>);
+		armEmitReloadCycleAfterCall();
 		armStoreGPR64SignExt32(a64::w0, _Rt_);
 	}
 }
@@ -292,7 +302,9 @@ void recLWU()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem32_t>);
+		armEmitReloadCycleAfterCall();
 		armStoreGPR64(a64::x0, _Rt_);
 	}
 }
@@ -319,7 +331,9 @@ void recLD()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem64_t>);
+		armEmitReloadCycleAfterCall();
 		armStoreGPR64(a64::x0, _Rt_);
 	}
 }
@@ -345,7 +359,9 @@ void recLWC1()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memRead<mem32_t>);
+		armEmitReloadCycleAfterCall();
 		armAsm->Str(a64::w0, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Rt_)));
 	}
 }
@@ -413,7 +429,9 @@ void recSB()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memWrite<mem8_t>);
+		armEmitReloadCycleAfterCall();
 	}
 }
 #endif
@@ -438,7 +456,9 @@ void recSH()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memWrite<mem16_t>);
+		armEmitReloadCycleAfterCall();
 	}
 }
 #endif
@@ -463,7 +483,9 @@ void recSW()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memWrite<mem32_t>);
+		armEmitReloadCycleAfterCall();
 	}
 }
 #endif
@@ -488,7 +510,9 @@ void recSD()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memWrite<mem64_t>);
+		armEmitReloadCycleAfterCall();
 	}
 }
 #endif
@@ -513,7 +537,9 @@ void recSWC1()
 	else
 	{
 		armPreVtlbCall();
+		armEmitFlushCycleBeforeCall();
 		armEmitCall((const void*)&vtlb_memWrite<mem32_t>);
+		armEmitReloadCycleAfterCall();
 	}
 }
 #endif

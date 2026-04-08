@@ -207,6 +207,98 @@ void armDelConstReg(int reg)
 	GPR_DEL_CONST(reg);
 }
 
+// ============================================================================
+//  Cycle delta helpers (Phase B)
+// ============================================================================
+// RCYCLE (x20) holds (s64)(cpuRegs.cycle - cpuRegs.nextEventCycle).
+// Negative = budget remaining; >= 0 = event due.
+// Per-block accounting becomes a single ADDS + B.MI continue, replacing the
+// 7-instruction LDR/ADD/STR/LDR/CMP/B.LO/B sequence used previously.
+//
+// The in-memory cpuRegs.cycle is stale during JIT execution (the in-flight
+// delta lives in x20). It is reconciled at every "exit to C++" point:
+//   - DispatcherEvent (before recEventTest)
+//   - armBranchCallInterpreter (before the BL into the interp branch helper)
+// armCallInterpreter does NOT writeback — per-instruction interp helpers do
+// not read cpuRegs.cycle, matching the prior s_nBlockCycles model.
+
+// Emit: cpuRegs.cycle = cpuRegs.nextEventCycle + RCYCLE
+//       (i.e. flush the in-flight delta back to memory)
+static void armWritebackCycle()
+{
+	armAsm->Ldr(a64::x1, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Add(a64::x0, a64::x1, RCYCLE);
+	armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+}
+
+// Emit: RCYCLE = cpuRegs.cycle - cpuRegs.nextEventCycle
+//       (i.e. reload the delta from memory after C++ may have changed either)
+static void armReloadCycle()
+{
+	armAsm->Ldr(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+	armAsm->Ldr(a64::x1, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Sub(RCYCLE, a64::x0, a64::x1);
+}
+
+// Emit: dst = cpuRegs.nextEventCycle + RCYCLE
+// JIT-current cycle for ops that need to read "cycle now" (e.g. COP0 Count).
+// Reading CYCLE_OFFSET directly would be stale by potentially many blocks
+// since RCYCLE only writes back at iBranchTest / DispatcherEvent.
+void armEmitLoadCurrentCycle(const a64::Register& dst)
+{
+	armAsm->Ldr(dst, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Add(dst, dst, RCYCLE);
+}
+
+// Inline cpuSetNextEventDelta(delta) — see header for math derivation.
+//   if (RCYCLE + delta) < 0:
+//     nextEventCycle += (RCYCLE + delta)
+//     RCYCLE = -delta
+// Clobbers x9, x10.
+void armEmitSetNextEventDelta(s32 delta)
+{
+	a64::Label skip;
+	// x9 = RCYCLE + delta, sets flags. ADDS supports a 12-bit unsigned imm
+	// (optionally LSL #12); the macro assembler spills to a temp if needed.
+	armAsm->Adds(a64::x9, RCYCLE, delta);
+	// If result >= 0 (signed), the existing schedule is already at or before
+	// (cycle + delta), so leave it.
+	armAsm->B(&skip, a64::ge);
+	// nextEventCycle += x9 (pulls the event forward by the missing budget)
+	armAsm->Ldr(a64::x10, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Add(a64::x10, a64::x10, a64::x9);
+	armAsm->Str(a64::x10, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	// RCYCLE = -delta
+	armAsm->Mov(RCYCLE, -static_cast<s64>(delta));
+	armAsm->Bind(&skip);
+}
+
+// Flush RCYCLE → cpuRegs.cycle BEFORE a C++ call that reads cycle or
+// reschedules events. Required because Phase B keeps the JIT-current cycle
+// only in RCYCLE; cpuRegs.cycle in memory is stale by the block's accumulated
+// cycles. Without this flush, callees like CPU_INT compute new nec from a
+// stale "now" and schedule events too late.
+//   cpuRegs.cycle = cpuRegs.nextEventCycle + RCYCLE
+// Uses x9 as scratch (caller-saved, free pre-call).
+void armEmitFlushCycleBeforeCall()
+{
+	armAsm->Ldr(a64::x9, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Add(a64::x9, a64::x9, RCYCLE);
+	armAsm->Str(a64::x9, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+}
+
+// Reload RCYCLE from memory AFTER a C++ call that may have mutated nec
+// (and that was preceded by armEmitFlushCycleBeforeCall, so cpuRegs.cycle
+// is current). Reconstructs the Phase B invariant:
+//   RCYCLE = cpuRegs.cycle - cpuRegs.nextEventCycle
+// Uses x9/x10 as scratch — does NOT clobber x0/w0 (vtlb_memRead's return).
+void armEmitReloadCycleAfterCall()
+{
+	armAsm->Ldr(a64::x9, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+	armAsm->Ldr(a64::x10, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Sub(RCYCLE, a64::x9, a64::x10);
+}
+
 void armLoadGPR64(const a64::Register& dst, int gpr)
 {
 	if (gpr == 0)
@@ -284,18 +376,27 @@ void armCallInterpreter(void (*func)())
 
 // Branch-call variant: used for interpreter branch/syscall/trap stubs.
 // Matches the upstream x86 recBranchCall:
-//   1) Sets nextEventCycle = cycle to force an event check at block end
+//   1) Writes the in-flight cycle delta back and forces an event check
+//      (cpuRegs.cycle = nextEventCycle + RCYCLE; nextEventCycle = cycle)
 //   2) Flushes state and calls the standard interpreter function
 //      (which calls doBranch → intUpdateCPUCycles → intEventTest,
 //       properly counting delay slot cycles and processing events)
-//   3) Sets g_branch = 2
+//   3) Reloads RCYCLE from memory (interp may have advanced cycle and/or
+//      scheduled a new nextEventCycle)
+//   4) Sets g_branch = 2
 void armBranchCallInterpreter(void (*func)())
 {
-	// Force an event check: nextEventCycle = cycle
-	armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
-	armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	// cpuRegs.cycle = nextEventCycle + RCYCLE  (writeback the in-flight delta)
+	armAsm->Ldr(a64::x1, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
+	armAsm->Add(a64::x0, a64::x1, RCYCLE);
+	armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+	// nextEventCycle = cycle  (force the post-call iBranchTest into DispatcherEvent)
+	armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
 
 	armCallInterpreter(func);
+
+	// Reload the delta — interp may have changed both cycle and nextEventCycle.
+	armReloadCycle();
 	g_branch = 2;
 }
 
@@ -379,7 +480,8 @@ static const void* _DynGen_DispatcherReg()
 	return retval;
 }
 
-// Event dispatcher: call recEventTest, then jump to DispatcherReg.
+// Event dispatcher: writeback the cycle delta, call recEventTest, reload, then
+// jump to DispatcherReg.
 // On x86, DispatcherEvent falls through into DispatcherReg (contiguous code).
 // On ARM64 each armStartBlock/armEndBlock pair introduces alignment padding,
 // so we must use an explicit jump instead of relying on fallthrough.
@@ -388,7 +490,11 @@ static const void* _DynGen_DispatcherEvent()
 	pxAssert(DispatcherReg); // must be generated first
 	u8* retval = armStartBlock();
 
+	// recEventTest reads cpuRegs.cycle and may schedule a new nextEventCycle.
+	// Flush the in-flight delta before the call, reload after.
+	armWritebackCycle();
 	armEmitCall((const void*)recEventTest);
+	armReloadCycle();
 	armEmitJmp(DispatcherReg);
 
 	armEndBlock();
@@ -436,6 +542,9 @@ static const void* _DynGen_EnterRecompiledCode()
 	// Load fastmem base for VTLB direct access
 	if (vtlb_private::vtlbdata.fastmem_base)
 		armMoveAddressToReg(RFASTMEMBASE, (void*)vtlb_private::vtlbdata.fastmem_base);
+
+	// Initialize RCYCLE = cpuRegs.cycle - cpuRegs.nextEventCycle
+	armReloadCycle();
 
 	// Jump to the dispatcher
 	armEmitJmp(DispatcherReg);
@@ -494,42 +603,30 @@ static void _DynGen_Dispatchers()
 
 static void iBranchTest(u32 newpc)
 {
-	// cpuRegs.cycle += scaleblockcycles();
-	// if (cpuRegs.cycle >= cpuRegs.nextEventCycle) goto DispatcherEvent;
-	// else goto DispatcherReg (or linked block);
+	// RCYCLE += scaleblockcycles();
+	// if (RCYCLE < 0)  goto DispatcherReg (or linked block);  // still have budget
+	// else             goto DispatcherEvent;                  // event due
+	//
+	// RCYCLE = (cycle - nextEventCycle), so result-negative (N=1) means
+	// cycle is still behind nextEventCycle, i.e. budget remaining. B.MI catches
+	// that. The fall-through path covers both result==0 and result>0.
 
 	u32 cycles = scaleblockcycles();
 
 	if (EmuConfig.Speedhacks.WaitLoop && s_nBlockFF && newpc == s_branchTo)
 	{
-		// Wait loop optimization: set cycle = max(cycle + n, nextEventCycle)
-		armAsm->Ldr(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
-		armAsm->Add(a64::x0, a64::x0, cycles);
-		armAsm->Ldr(a64::x1, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
-		armAsm->Cmp(a64::x0, a64::x1);
-		armAsm->Csel(a64::x0, a64::x1, a64::x0, a64::lo);
-		armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+		// Wait loop optimization: cycle = max(cycle + n, nextEventCycle)
+		// In delta form: RCYCLE = max(RCYCLE + n, 0), then jump to DispatcherEvent.
+		armAsm->Adds(RCYCLE, RCYCLE, cycles);
+		armAsm->Csel(RCYCLE, a64::xzr, RCYCLE, a64::mi);
 		armEmitJmp(DispatcherEvent);
 	}
 	else
 	{
-		// Normal path: add cycles, check event
-		armAsm->Ldr(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
-		armAsm->Add(a64::x0, a64::x0, cycles);
-		armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
-		armAsm->Ldr(a64::x1, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
-		armAsm->Cmp(a64::x0, a64::x1);
-
-		if (newpc == 0xffffffff)
-		{
-			// Dynamic branch — go to DispatcherReg if no event, else DispatcherEvent
-			armEmitCondBranch(a64::lo, DispatcherReg);
-		}
-		else
-		{
-			armEmitCondBranch(a64::lo, DispatcherReg);
-		}
-		armEmitJmp(DispatcherEvent);
+		// Normal path: bump the delta, branch on sign.
+		armAsm->Adds(RCYCLE, RCYCLE, cycles);
+		armEmitCondBranch(a64::mi, DispatcherReg); // N=1: still have budget
+		armEmitJmp(DispatcherEvent);               // fall through: event due
 	}
 }
 

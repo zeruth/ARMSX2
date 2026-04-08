@@ -71,7 +71,7 @@ void recMFC0()
 	{
 		// Count register: must update even if _Rt_ == 0
 		// Count += cpuRegs.cycle - cpuRegs.lastCOP0Cycle (min 1)
-		armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+		armEmitLoadCurrentCycle(RSCRATCHGPR);
 		armAsm->Ldr(RSCRATCHGPR2, a64::MemOperand(RCPUSTATE, LAST_COP0_CYCLE_OFFSET));
 		armAsm->Sub(RSCRATCHGPR3, RSCRATCHGPR, RSCRATCHGPR2);
 		// Ensure increment is at least 1
@@ -166,7 +166,7 @@ void recMTC0()
 		case 9: // Count
 		{
 			// lastCOP0Cycle = cycle
-			armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+			armEmitLoadCurrentCycle(RSCRATCHGPR);
 			armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LAST_COP0_CYCLE_OFFSET));
 			// CP0.r[9] = GPR[rt].UL[0]
 			armLoadGPR32(RWSCRATCH, _Rt_);
@@ -174,14 +174,19 @@ void recMTC0()
 			break;
 		}
 
-		case 12: // Status — call WriteCP0Status
+		case 12: // Status — inline WriteCP0Status (native, no C++ call)
 		{
-			armLoadGPR32(a64::w0, _Rt_);
-			armFlushConstRegs();
-			armFlushPC();
-			armFlushCode();
-			armAsm->Mov(RSCRATCHGPR, (u64)(uintptr_t)WriteCP0Status);
-			armAsm->Blr(RSCRATCHGPR);
+			// WriteCP0Status normally calls COP0_UpdatePCCR first to update
+			// performance counters. We skip that here: it would be a C++ call
+			// that reads (potentially stale) cpuRegs.cycle, and would also
+			// invalidate Phase B's pinned RCYCLE. Perf counters lose accuracy
+			// on Status writes, which is acceptable — they're only consumed
+			// by game-side profiling code, not by emulation correctness.
+			armLoadGPR32(RWSCRATCH, _Rt_);
+			armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, CP0_OFFSET(12)));
+			// Inline cpuSetNextEventDelta(4) — schedules an event check 4
+			// cycles out, atomically updating both memory nec and RCYCLE.
+			armEmitSetNextEventDelta(4);
 			break;
 		}
 
@@ -217,14 +222,14 @@ void recMTC0()
 			{
 				armLoadGPR32(RWSCRATCH, _Rt_);
 				armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, PERF_OFFSET + offsetof(PERFregs, n.pcr0)));
-				armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+				armEmitLoadCurrentCycle(RSCRATCHGPR);
 				armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LAST_PERF_CYCLE_OFFSET(0)));
 			}
 			else // MTPC 1
 			{
 				armLoadGPR32(RWSCRATCH, _Rt_);
 				armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, PERF_OFFSET + offsetof(PERFregs, n.pcr1)));
-				armAsm->Ldr(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, CYCLE_OFFSET));
+				armEmitLoadCurrentCycle(RSCRATCHGPR);
 				armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, LAST_PERF_CYCLE_OFFSET(1)));
 			}
 			break;

@@ -20,7 +20,9 @@
 //
 // GPR Pinning (callee-saved x19-x28):
 //   x19 = &cpuRegs            (EE CPU state base; fpuRegs follows in cpuRegistersPack)
-//   x20 = (free)              (Phase A — was &fpuRegs; reserved for cycle delta in Phase B)
+//   x20 = RCYCLE              (s64) cpuRegs.cycle - cpuRegs.nextEventCycle
+//                             negative = budget remaining; >=0 = event due
+//                             Per-block accounting: ADDS x20, x20, #cycles ; B.MI continue
 //   x21 = eeMem->Main         (EE RAM base)
 //   x22 = recLUT              (block dispatch lookup table)
 //   x23 = vtlbdata.fastmem_base (fastmem direct dispatch base)
@@ -44,6 +46,8 @@ namespace a64 = vixl::aarch64;
 
 // Pinned state registers
 #define RCPUSTATE    a64::x19
+#define RCYCLE       a64::x20
+#define RWCYCLE      a64::w20
 #define RMEMBASE     a64::x21
 #define RRECLUT      a64::x22
 #define RFASTMEMBASE a64::x23
@@ -169,8 +173,9 @@ void armStoreGPR64(const a64::Register& src_x, int gpr);
 void armCallInterpreter(void (*func)());
 
 // Branch-call variant for interpreter branch/syscall/trap stubs.
-// Sets nextEventCycle = cycle, calls the standard interpreter function
-// (which handles delay slot execution, cycle counting, and event testing),
+// Writes the in-flight cycle delta back to memory, forces an event check
+// (nextEventCycle = cycle), calls the interpreter function (which handles
+// delay slot execution, cycle counting, and event testing), reloads RCYCLE,
 // and sets g_branch = 2.
 void armBranchCallInterpreter(void (*func)());
 
@@ -179,6 +184,49 @@ void armFlushPC();
 
 // Emit code to flush cpuRegs.code if it hasn't been flushed yet.
 void armFlushCode();
+
+// Emit code to load the JIT-current cpuRegs.cycle into `dst`, computed as
+// nextEventCycle + RCYCLE. Use this anywhere a JIT-emitted op needs to read
+// "cycle now" instead of the (stale) in-memory cpuRegs.cycle. Same staleness
+// profile as the pre-Phase-B `LDR cycle` since RCYCLE is updated at end of
+// each block by iBranchTest.
+void armEmitLoadCurrentCycle(const vixl::aarch64::Register& dst);
+
+// Emit an inline cpuSetNextEventDelta(delta).
+//
+// Semantics: nextEventCycle = min(nextEventCycle, jit_cycle + delta)
+//   where jit_cycle = nextEventCycle + RCYCLE.
+//
+// In RCYCLE form (RCYCLE = jit_cycle - nextEventCycle):
+//   if (RCYCLE + delta) < 0:                  // new event would be sooner
+//     nextEventCycle += (RCYCLE + delta)      // pull nec forward
+//     RCYCLE = -delta                         // budget shrinks to delta
+//   // else: leave both untouched
+//
+// This avoids a C++ call into cpuSetNextEvent and keeps the JIT's pinned
+// RCYCLE in lockstep with the in-memory nextEventCycle in a single atomic
+// codegen sequence — required for any native op that schedules an event.
+// Clobbers x9, x10.
+void armEmitSetNextEventDelta(s32 delta);
+
+// Flush RCYCLE → cpuRegs.cycle BEFORE a C++ call. Phase B keeps the
+// JIT-current cycle only in RCYCLE; cpuRegs.cycle in memory is stale.
+// Without this flush, callees that read cycle (e.g. cpuSetNextEventDelta
+// from CPU_INT) would compute new nec from a stale "now" and schedule
+// events too late — causing hangs.
+//   cpuRegs.cycle = cpuRegs.nextEventCycle + RCYCLE
+// Uses x9 as scratch.
+void armEmitFlushCycleBeforeCall();
+
+// Reload RCYCLE from memory AFTER a C++ call that may have mutated
+// cpuRegs.nextEventCycle (e.g. a slow-path vtlb_mem* hitting an MMIO handler
+// that calls CPU_INT). Pair with armEmitFlushCycleBeforeCall around the call,
+// otherwise the accumulated cycles in RCYCLE are lost.
+//   RCYCLE = cpuRegs.cycle - cpuRegs.nextEventCycle
+//
+// IMPORTANT: must NOT clobber x0/w0 — vtlb_memRead returns its value there.
+// Uses x9/x10 as scratch (caller-saved, free across the prior call).
+void armEmitReloadCycleAfterCall();
 
 // Allocate space for a backpatch thunk from the rec code buffer.
 u8* recBeginThunk();
