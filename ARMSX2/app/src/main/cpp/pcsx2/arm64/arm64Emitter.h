@@ -181,13 +181,7 @@ u8* recEndThunk();
 //#define INTERP_TRAP      // TGEI, TGEIU, TLTI, TLTIU, TEQI, TNEI, TGE, TGEU, TLT, TLTU, TEQ, TNE
 
 //VU0
-// Bisect: comment out a line to enable native codegen for that aspect.
-// All uncommented = pair machinery falls back to vu0Exec wherever the aspect
-// applies (closest the JIT can get to the interpreter while still going
-// through block dispatch). Comment one at a time to find the offending native emit.
-// Note: VU0 has no per-instruction native codegen — every entry in
-// recVU0_UpperTable / recVU0_LowerTable is an interpreter stub. The bug surface
-// is the per-pair block machinery emitted by CompileBlock in iVU0micro_arm64.cpp.
+// Pair-level bisect: comment out a line to force that class of pairs to fall back to vu0Exec.
 //#define INTERP_VU0            // Master
 //#define INTERP_VU0_PAIR       // Force every pair to fall back to vu0Exec (kills all per-pair native machinery)
 //#define INTERP_VU0_HAZARD     // (Dormant — VF/CLIP hazards always fall back; native save/restore not yet implemented)
@@ -195,7 +189,14 @@ u8* recEndThunk();
 //#define INTERP_VU0_DTBITS     // Fall back to vu0Exec when D-bit or T-bit is set
 //#define INTERP_VU0_EBIT       // Fall back to vu0Exec when E-bit is set
 //#define INTERP_VU0_BRANCH     // Fall back to vu0Exec when the pair contains a branch lower op
-//#define INTERP_VU0_FMAC       // Fall back to vu0Exec when the pair has an FMAC pipe op
+
+
+//#define INTERP_VU0_UPPER     // FMAC arith (ADD/SUB/MUL/MADD/MSUB xyzwqi), accum, MAX/MINI, ABS, CLIP, FTOI/ITOF, NOP
+//#define INTERP_VU0_LOWER_FDIV       // DIV, SQRT, RSQRT, WAITQ, WAITP
+//#define INTERP_VU0_LOWER_IALU       // IADD, ISUB, IADDI, IADDIU, ISUBIU, IAND, IOR
+//#define INTERP_VU0_LOWER_LOADSTORE  // LQ, LQD, LQI, SQ, SQD, SQI, ILW, ISW, ILWR, ISWR
+//#define INTERP_VU0_LOWER_BRANCH     // B, BAL, JR, JALR, IBEQ, IBNE, IBLTZ, IBGTZ, IBLEZ, IBGEZ
+//#define INTERP_VU0_LOWER_MISC       // MOVE, MR32, MFIR, MTIR, MFP, flag ops, random, EFU, XITOP, XTOP, XGKICK
 
 //VU1
 //#define INTERP_VU1            // Master

@@ -273,15 +273,29 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		const _VURegsNum& uregs = uregs_data[i];
 		const _VURegsNum& lregs = lregs_data[i];
 
-		// Detect VF/VI write-before-read hazard at compile time.
-		// If present, fall back to vu1Exec for this pair for correctness.
+		// Detect every VF/VI hazard that _vu1Exec (VU1microInterp.cpp:108-163)
+		// resolves via save/restore or discard. The native machinery does
+		// neither, so all four cases must fall back to vu1Exec:
+		//
+		//   VF: upper writes vfX, lower also writes vfX        -> discard lower
+		//   VF: upper writes vfX, lower reads  vfX             -> save/restore VF
+		//   CLIP: upper writes CLIP, lower writes CLIP         -> discard lower
+		//   CLIP: upper writes CLIP, lower reads  CLIP         -> save/restore CLIP
+		//
 		// The TPC at this point already equals `pc` (set by the previous pair),
 		// so vu1Exec can run directly without adjustment.
+		//
+		// Without the discard cases, the JIT runs upper then lower
+		// sequentially and lower's write silently clobbers upper's FMAC
+		// result whenever both target the same VF.
 		const bool vf_hazard = !ibit && uregs.VFwrite != 0 &&
-			(lregs.VFread0 == uregs.VFwrite || lregs.VFread1 == uregs.VFwrite);
+			(lregs.VFwrite == uregs.VFwrite ||
+			 lregs.VFread0 == uregs.VFwrite ||
+			 lregs.VFread1 == uregs.VFwrite);
 		const bool vi_hazard = !ibit &&
 			(uregs.VIwrite & (1u << REG_CLIP_FLAG)) &&
-			(lregs.VIread  & (1u << REG_CLIP_FLAG));
+			((lregs.VIwrite & (1u << REG_CLIP_FLAG)) ||
+			 (lregs.VIread  & (1u << REG_CLIP_FLAG)));
 
 		if (vf_hazard || vi_hazard)
 		{

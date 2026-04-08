@@ -727,7 +727,7 @@ struct Pcsx2Config
 		static constexpr GSCASMode DEFAULT_CAS_MODE = GSCASMode::Disabled;
 
 		static constexpr float DEFAULT_UPSCALE_MULTIPLIER = 1.0f;
-		static constexpr AccBlendLevel DEFAULT_BLENDING_ACCURACY = AccBlendLevel::Basic;
+		static constexpr AccBlendLevel DEFAULT_BLENDING_ACCURACY = AccBlendLevel::Full;
 		static constexpr BiFiltering DEFAULT_TEXTURE_FILTERING_MODE = BiFiltering::PS2;
 		static constexpr TriFiltering DEFAULT_TRILINEAR_FILTERING_MODE = TriFiltering::Automatic;
 

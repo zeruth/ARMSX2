@@ -243,11 +243,29 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		const _VURegsNum& uregs = uregs_data[i];
 		const _VURegsNum& lregs = lregs_data[i];
 
+		// Hazard detection — match every save/restore/discard case in
+		// _vu0Exec (VU0microInterp.cpp:104-158). Anything that needs the
+		// "lower sees pre-upper state" or "lower discarded" semantics must
+		// fall back to vu0Exec because the native machinery does neither.
+		//
+		//   VF: upper writes vfX, lower also writes vfX        -> discard lower
+		//   VF: upper writes vfX, lower reads  vfX             -> save/restore VF
+		//   CLIP: upper writes CLIP, lower writes CLIP         -> discard lower
+		//   CLIP: upper writes CLIP, lower reads  CLIP         -> save/restore CLIP
+		//
+		// Without the discard cases, the JIT runs upper then lower
+		// sequentially: when both write the same VF, lower's value wins,
+		// silently clobbering the upper FMAC result. This manifests as
+		// vertex/shadow corruption in titles like SA where transform
+		// pipelines pair `MUL vfX, ...` (upper) with `LQI vfX, ...` (lower).
 		const bool vf_hazard = !ibit && uregs.VFwrite != 0 &&
-			(lregs.VFread0 == uregs.VFwrite || lregs.VFread1 == uregs.VFwrite);
+			(lregs.VFwrite == uregs.VFwrite ||
+			 lregs.VFread0 == uregs.VFwrite ||
+			 lregs.VFread1 == uregs.VFwrite);
 		const bool vi_hazard = !ibit &&
 			(uregs.VIwrite & (1u << REG_CLIP_FLAG)) &&
-			(lregs.VIread  & (1u << REG_CLIP_FLAG));
+			((lregs.VIwrite & (1u << REG_CLIP_FLAG)) ||
+			 (lregs.VIread  & (1u << REG_CLIP_FLAG)));
 		const bool mbit_set    = ((upper >> 29) & 1) != 0;
 		const bool fmac_pipe   = (uregs.pipe == VUPIPE_FMAC) || (lregs.pipe == VUPIPE_FMAC);
 		const bool branch_pipe = !ibit && (lregs.pipe == VUPIPE_BRANCH);
@@ -275,9 +293,6 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 #endif
 #ifdef INTERP_VU0_BRANCH
 		if (branch_pipe) fallback = true;
-#endif
-#ifdef INTERP_VU0_FMAC
-		if (fmac_pipe) fallback = true;
 #endif
 
 		if (fallback)

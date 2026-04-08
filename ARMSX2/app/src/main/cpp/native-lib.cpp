@@ -122,6 +122,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         si.SetStringValue("SPU2/Output", "Backend", "Oboe");
         si.SetBoolValue("EmuCore", "EnableFastBoot", false);
 
+        // VK HW is temporarily disabled (blending bugs). Force the default renderer to SW
+        // so the SW renderer is used while keeping Vulkan as the display backend on Android.
+        // Restore Auto (or VK) once VK HW blending is fixed.
+        si.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::SW));
+
         // none of the bindings are going to resolve to anything
         Pad::ClearPortBindings(si, 0);
         si.ClearSection("Hotkeys");
@@ -336,7 +341,13 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderOpenGL(JNIEnv *env, jclass clazz) {
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderVulkan(JNIEnv *env, jclass clazz) {
-    EmuConfig.GS.Renderer = GSRendererType::VK;
+    // VK HW is temporarily disabled due to unresolved blending visual bugs
+    // (BIOS pillars / SCEA text get black boxes when AccBlendLevel = Full).
+    // Coerce VK HW requests to SW so the SW renderer still uses the Vulkan
+    // device as its display backend. Restore the line below once VK HW
+    // blending is fixed.
+    // EmuConfig.GS.Renderer = GSRendererType::VK;
+    EmuConfig.GS.Renderer = GSRendererType::SW;
     if(MTGS::IsOpen()) {
         MTGS::ApplySettings();
     }

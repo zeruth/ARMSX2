@@ -241,16 +241,16 @@ REC_MMI_STUB(PEXCW)
 #define ISTUB_PEXT5    1   // RGB5→RGBA8 bit shuffle
 #define ISTUB_PPAC5    1   // RGBA8→RGB5 bit shuffle
 #define ISTUB_QFSRV    1   // variable byte-shift (runtime sa)
-#define ISTUB_PMADDH   1   // 8×16b MAC to HI/LO
-#define ISTUB_PHMADH   1   // horizontal MAC
-#define ISTUB_PMSUBH   1   // 8×16b MSUB to HI/LO
-#define ISTUB_PHMSBH   1   // horizontal MSUB
-#define ISTUB_PMULTH   1   // 8×16b multiply to HI/LO
-#define ISTUB_PMADDW   1   // 2×32b MAC to HI/LO
-#define ISTUB_PMSUBW   1   // 2×32b MSUB to HI/LO
-#define ISTUB_PMULTW   1   // 2×32b multiply to HI/LO
-#define ISTUB_PMADDUW  1   // 2×32b unsigned MAC to HI/LO
-#define ISTUB_PMULTUW  1   // 2×32b unsigned multiply to HI/LO
+#define ISTUB_PMADDH   0   // 8×16b MAC to HI/LO
+#define ISTUB_PHMADH   0   // horizontal MAC
+#define ISTUB_PMSUBH   0   // 8×16b MSUB to HI/LO
+#define ISTUB_PHMSBH   0   // horizontal MSUB
+#define ISTUB_PMULTH   0   // 8×16b multiply to HI/LO
+#define ISTUB_PMADDW   0   // 2×32b MAC to HI/LO
+#define ISTUB_PMSUBW   0   // 2×32b MSUB to HI/LO
+#define ISTUB_PMULTW   0   // 2×32b multiply to HI/LO
+#define ISTUB_PMADDUW  0   // 2×32b unsigned MAC to HI/LO
+#define ISTUB_PMULTUW  0   // 2×32b unsigned multiply to HI/LO
 #define ISTUB_PDIVW    1   // 2×32b signed divide to HI/LO
 #define ISTUB_PDIVUW   1   // 2×32b unsigned divide to HI/LO
 #define ISTUB_PDIVBW   1   // 4×32/16b divide to HI/LO
@@ -725,13 +725,70 @@ void recQFSRV() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::QFSRV)
 #if ISTUB_PMADDW
 void recPMADDW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDW); }
 #else
-void recPMADDW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDW); }
+void recPMADDW()
+{
+	// LO/HI are 128-bit accumulators, treated as two 64-bit slots (UD[0] and UD[1]).
+	// acc = { (s64)HI.SL[0]<<32 | (u32)LO.SL[0],  (s64)HI.SL[2]<<32 | (u32)LO.SL[2] }
+	// prod = { (s64)Rs.SL[0] * (s64)Rt.SL[0],  (s64)Rs.SL[2] * (s64)Rt.SL[2] }
+	// result = acc + prod
+	// new LO.SD[i] = sext32(result[i] & 0xFFFFFFFF)
+	// new HI.SD[i] = sext32(result[i] >> 32)
+	// Rd.SD[i]     = result[i]   (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	// Extract words 0 and 2 into the lower 2×32 lanes
+	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S()); // {Rs[0],Rs[2],Rs[0],Rs[2]}
+	armAsm->Uzp1(a64::v1.V4S(), a64::v1.V4S(), a64::v1.V4S()); // {Rt[0],Rt[2],Rt[0],Rt[2]}
+	armAsm->Smull(a64::v2.V2D(), a64::v0.V2S(), a64::v1.V2S()); // prod = {Rs[0]*Rt[0], Rs[2]*Rt[2]}
+	// Build 64-bit accumulator from LO and HI
+	armAsm->Ldr(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Ldr(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	armAsm->Uzp1(a64::v3.V4S(), a64::v3.V4S(), a64::v3.V4S()); // {LO[0],LO[2],...}
+	armAsm->Uzp1(a64::v4.V4S(), a64::v4.V4S(), a64::v4.V4S()); // {HI[0],HI[2],...}
+	armAsm->Uxtl(a64::v3.V2D(), a64::v3.V2S());                 // zero-extend LO elements
+	armAsm->Sxtl(a64::v4.V2D(), a64::v4.V2S());                 // sign-extend HI elements
+	armAsm->Shl(a64::v4.V2D(), a64::v4.V2D(), 32);              // shift HI to upper 32 bits
+	armAsm->Orr(a64::v3.V16B(), a64::v3.V16B(), a64::v4.V16B()); // acc = HI<<32|LO
+	armAsm->Add(a64::v2.V2D(), a64::v2.V2D(), a64::v3.V2D());   // result = prod + acc
+	// Split result: LO = sext32(low32), HI = sext32(high32)
+	armAsm->Xtn(a64::v3.V2S(), a64::v2.V2D());
+	armAsm->Sxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Sshr(a64::v4.V2D(), a64::v2.V2D(), 32);
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PMSUBW
 void recPMSUBW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUBW); }
 #else
-void recPMSUBW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUBW); }
+void recPMSUBW()
+{
+	// Same as PMADDW but result = acc - prod
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());
+	armAsm->Uzp1(a64::v1.V4S(), a64::v1.V4S(), a64::v1.V4S());
+	armAsm->Smull(a64::v2.V2D(), a64::v0.V2S(), a64::v1.V2S());
+	armAsm->Ldr(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Ldr(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	armAsm->Uzp1(a64::v3.V4S(), a64::v3.V4S(), a64::v3.V4S());
+	armAsm->Uzp1(a64::v4.V4S(), a64::v4.V4S(), a64::v4.V4S());
+	armAsm->Uxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Sxtl(a64::v4.V2D(), a64::v4.V2S());
+	armAsm->Shl(a64::v4.V2D(), a64::v4.V2D(), 32);
+	armAsm->Orr(a64::v3.V16B(), a64::v3.V16B(), a64::v4.V16B());
+	armAsm->Sub(a64::v2.V2D(), a64::v3.V2D(), a64::v2.V2D());   // result = acc - prod
+	armAsm->Xtn(a64::v3.V2S(), a64::v2.V2D());
+	armAsm->Sxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Sshr(a64::v4.V2D(), a64::v2.V2D(), 32);
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PMFHI
@@ -776,7 +833,25 @@ void recPINTH()
 #if ISTUB_PMULTW
 void recPMULTW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTW); }
 #else
-void recPMULTW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTW); }
+void recPMULTW()
+{
+	// prod = { (s64)Rs.SL[0]*(s64)Rt.SL[0], (s64)Rs.SL[2]*(s64)Rt.SL[2] }
+	// LO.SD[i] = sext32(prod[i] & 0xFFFFFFFF)
+	// HI.SD[i] = sext32(prod[i] >> 32)
+	// Rd.SD[i] = prod[i]  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S()); // {Rs[0],Rs[2],Rs[0],Rs[2]}
+	armAsm->Uzp1(a64::v1.V4S(), a64::v1.V4S(), a64::v1.V4S()); // {Rt[0],Rt[2],Rt[0],Rt[2]}
+	armAsm->Smull(a64::v2.V2D(), a64::v0.V2S(), a64::v1.V2S()); // {prod0, prod1}
+	armAsm->Xtn(a64::v3.V2S(), a64::v2.V2D());
+	armAsm->Sxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Sshr(a64::v4.V2D(), a64::v2.V2D(), 32);
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PDIVW
@@ -802,13 +877,63 @@ void recPCPYLD()
 #if ISTUB_PMADDH
 void recPMADDH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDH); }
 #else
-void recPMADDH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDH); }
+void recPMADDH()
+{
+	// p[i] = Rs.SS[i] * Rt.SS[i]  (signed 16×16→32, 8 products)
+	// LO += {p0,p1,p4,p5}  (32-bit wrapping add per element)
+	// HI += {p2,p3,p6,p7}
+	// Rd = {new_LO[0], new_HI[0], new_LO[2], new_HI[2]}  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
+	armAsm->Smull2(a64::v3.V4S(), a64::v0.V8H(), a64::v1.V8H()); // {p4,p5,p6,p7}
+	armAsm->Ldr(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Ldr(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	// lo_add={p0,p1,p4,p5} = {v2.D[0],v3.D[0]}, hi_add={p2,p3,p6,p7} = {v2.D[1],v3.D[1]}
+	armAsm->Uzp1(a64::v6.V2D(), a64::v2.V2D(), a64::v3.V2D()); // lo_add
+	armAsm->Uzp2(a64::v7.V2D(), a64::v2.V2D(), a64::v3.V2D()); // hi_add
+	armAsm->Add(a64::v4.V4S(), a64::v4.V4S(), a64::v6.V4S());  // new LO
+	armAsm->Add(a64::v5.V4S(), a64::v5.V4S(), a64::v7.V4S());  // new HI
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Str(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) {
+		// Rd = {LO[0],HI[0],LO[2],HI[2]}: interleave even elements of LO and HI
+		armAsm->Uzp1(a64::v0.V4S(), a64::v4.V4S(), a64::v4.V4S()); // {LO[0],LO[2],LO[0],LO[2]}
+		armAsm->Uzp1(a64::v1.V4S(), a64::v5.V4S(), a64::v5.V4S()); // {HI[0],HI[2],HI[0],HI[2]}
+		armAsm->Zip1(a64::v0.V4S(), a64::v0.V4S(), a64::v1.V4S()); // {LO[0],HI[0],LO[2],HI[2]}
+		armStoreGPR128(_Rd_, a64::q0);
+	}
+}
 #endif
 
 #if ISTUB_PHMADH
 void recPHMADH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PHMADH); }
 #else
-void recPHMADH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PHMADH); }
+void recPHMADH()
+{
+	// p[i] = Rs.SS[i] * Rt.SS[i];  pairs (0,1), (2,3), (4,5), (6,7)
+	// LO = {p0+p1, p1, p4+p5, p5}
+	// HI = {p2+p3, p3, p6+p7, p7}
+	// Rd = {p0+p1, p2+p3, p4+p5, p6+p7}  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
+	armAsm->Smull2(a64::v3.V4S(), a64::v0.V8H(), a64::v1.V8H()); // {p4,p5,p6,p7}
+	// even={p0,p2,p4,p6}, odd={p1,p3,p5,p7}
+	armAsm->Uzp1(a64::v4.V4S(), a64::v2.V4S(), a64::v3.V4S());
+	armAsm->Uzp2(a64::v5.V4S(), a64::v2.V4S(), a64::v3.V4S());
+	armAsm->Add(a64::v2.V4S(), a64::v4.V4S(), a64::v5.V4S());    // sums (= Rd)
+	// Interleave sums and odds to build LO/HI halves
+	armAsm->Zip1(a64::v6.V4S(), a64::v2.V4S(), a64::v5.V4S()); // {p01,p1,p23,p3}
+	armAsm->Zip2(a64::v7.V4S(), a64::v2.V4S(), a64::v5.V4S()); // {p45,p5,p67,p7}
+	armAsm->Uzp1(a64::v3.V2D(), a64::v6.V2D(), a64::v7.V2D()); // LO = {p01,p1, p45,p5}
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Uzp2(a64::v4.V2D(), a64::v6.V2D(), a64::v7.V2D()); // HI = {p23,p3, p67,p7}
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2); // sums = {p01,p23,p45,p67}
+}
 #endif
 
 #if ISTUB_PAND
@@ -836,13 +961,58 @@ void recPXOR()
 #if ISTUB_PMSUBH
 void recPMSUBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUBH); }
 #else
-void recPMSUBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMSUBH); }
+void recPMSUBH()
+{
+	// Same as PMADDH but subtracts: LO -= {p0,p1,p4,p5}, HI -= {p2,p3,p6,p7}
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());
+	armAsm->Smull2(a64::v3.V4S(), a64::v0.V8H(), a64::v1.V8H());
+	armAsm->Ldr(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Ldr(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	armAsm->Uzp1(a64::v6.V2D(), a64::v2.V2D(), a64::v3.V2D()); // lo_sub={p0,p1,p4,p5}
+	armAsm->Uzp2(a64::v7.V2D(), a64::v2.V2D(), a64::v3.V2D()); // hi_sub={p2,p3,p6,p7}
+	armAsm->Sub(a64::v4.V4S(), a64::v4.V4S(), a64::v6.V4S());  // new LO
+	armAsm->Sub(a64::v5.V4S(), a64::v5.V4S(), a64::v7.V4S());  // new HI
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Str(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) {
+		armAsm->Uzp1(a64::v0.V4S(), a64::v4.V4S(), a64::v4.V4S());
+		armAsm->Uzp1(a64::v1.V4S(), a64::v5.V4S(), a64::v5.V4S());
+		armAsm->Zip1(a64::v0.V4S(), a64::v0.V4S(), a64::v1.V4S());
+		armStoreGPR128(_Rd_, a64::q0);
+	}
+}
 #endif
 
 #if ISTUB_PHMSBH
 void recPHMSBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PHMSBH); }
 #else
-void recPHMSBH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PHMSBH); }
+void recPHMSBH()
+{
+	// p[i] = Rs.SS[i] * Rt.SS[i];  odd products minus even products per pair
+	// LO = {p1-p0, ~p1, p5-p4, ~p5}
+	// HI = {p3-p2, ~p3, p7-p6, ~p7}
+	// Rd = {p1-p0, p3-p2, p5-p4, p7-p6}  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
+	armAsm->Smull2(a64::v3.V4S(), a64::v0.V8H(), a64::v1.V8H()); // {p4,p5,p6,p7}
+	armAsm->Uzp1(a64::v4.V4S(), a64::v2.V4S(), a64::v3.V4S());   // even: {p0,p2,p4,p6}
+	armAsm->Uzp2(a64::v5.V4S(), a64::v2.V4S(), a64::v3.V4S());   // odd:  {p1,p3,p5,p7}
+	armAsm->Sub(a64::v2.V4S(), a64::v5.V4S(), a64::v4.V4S());    // diff: {p1-p0,p3-p2,p5-p4,p7-p6} = Rd
+	armAsm->Mvn(a64::v3.V16B(), a64::v5.V16B());                  // ~odd: {~p1,~p3,~p5,~p7}
+	// Interleave diff and ~odd to build LO/HI halves
+	armAsm->Zip1(a64::v6.V4S(), a64::v2.V4S(), a64::v3.V4S()); // {p1-p0,~p1, p3-p2,~p3}
+	armAsm->Zip2(a64::v7.V4S(), a64::v2.V4S(), a64::v3.V4S()); // {p5-p4,~p5, p7-p6,~p7}
+	armAsm->Uzp1(a64::v4.V2D(), a64::v6.V2D(), a64::v7.V2D()); // LO = {p1-p0,~p1, p5-p4,~p5}
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Uzp2(a64::v5.V2D(), a64::v6.V2D(), a64::v7.V2D()); // HI = {p3-p2,~p3, p7-p6,~p7}
+	armAsm->Str(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PEXEH
@@ -870,7 +1040,28 @@ void recPREVH() { armMMIUnaryOp([]() { armAsm->Rev64(a64::v0.V8H(), a64::v0.V8H(
 #if ISTUB_PMULTH
 void recPMULTH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTH); }
 #else
-void recPMULTH() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTH); }
+void recPMULTH()
+{
+	// p[i] = Rs.SS[i] * Rt.SS[i]  (signed 16×16→32, 8 products)
+	// LO = {p0,p1,p4,p5},  HI = {p2,p3,p6,p7}
+	// Rd = {p0,p2,p4,p6}  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Smull(a64::v2.V4S(), a64::v0.V4H(), a64::v1.V4H());  // {p0,p1,p2,p3}
+	armAsm->Smull2(a64::v3.V4S(), a64::v0.V8H(), a64::v1.V8H()); // {p4,p5,p6,p7}
+	// LO = {v2.D[0], v3.D[0]} = {p0,p1,p4,p5}
+	armAsm->Uzp1(a64::v4.V2D(), a64::v2.V2D(), a64::v3.V2D());
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	// HI = {v2.D[1], v3.D[1]} = {p2,p3,p6,p7}
+	armAsm->Uzp2(a64::v5.V2D(), a64::v2.V2D(), a64::v3.V2D());
+	armAsm->Str(a64::q5, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) {
+		// Rd = {p0,p2,p4,p6} = even elements from v2 and v3
+		armAsm->Uzp1(a64::v2.V4S(), a64::v2.V4S(), a64::v3.V4S());
+		armStoreGPR128(_Rd_, a64::q2);
+	}
+}
 #endif
 
 #if ISTUB_PDIVBW
@@ -916,7 +1107,36 @@ void recPROT3W()
 #if ISTUB_PMADDUW
 void recPMADDUW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDUW); }
 #else
-void recPMADDUW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMADDUW); }
+void recPMADDUW()
+{
+	// Unsigned: acc = {(u64)HI.UL[0]<<32|(u64)LO.UL[0], (u64)HI.UL[2]<<32|(u64)LO.UL[2]}
+	// prod     = {(u64)Rs.UL[0]*(u64)Rt.UL[0], (u64)Rs.UL[2]*(u64)Rt.UL[2]}
+	// result   = acc + prod
+	// new LO.SD[i] = sext32(result[i] & 0xFFFFFFFF)
+	// new HI.SD[i] = sext32(result[i] >> 32)
+	// Rd.UD[i] = result[i]  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());
+	armAsm->Uzp1(a64::v1.V4S(), a64::v1.V4S(), a64::v1.V4S());
+	armAsm->Umull(a64::v2.V2D(), a64::v0.V2S(), a64::v1.V2S()); // unsigned prod
+	armAsm->Ldr(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Ldr(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	armAsm->Uzp1(a64::v3.V4S(), a64::v3.V4S(), a64::v3.V4S());
+	armAsm->Uzp1(a64::v4.V4S(), a64::v4.V4S(), a64::v4.V4S());
+	armAsm->Uxtl(a64::v3.V2D(), a64::v3.V2S()); // zero-extend LO elements
+	armAsm->Uxtl(a64::v4.V2D(), a64::v4.V2S()); // zero-extend HI elements (unsigned acc)
+	armAsm->Shl(a64::v4.V2D(), a64::v4.V2D(), 32);
+	armAsm->Orr(a64::v3.V16B(), a64::v3.V16B(), a64::v4.V16B());
+	armAsm->Add(a64::v2.V2D(), a64::v2.V2D(), a64::v3.V2D());
+	armAsm->Xtn(a64::v3.V2S(), a64::v2.V2D());
+	armAsm->Sxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Sshr(a64::v4.V2D(), a64::v2.V2D(), 32);
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PSRAVW
@@ -1010,7 +1230,25 @@ void recPNOR()
 #if ISTUB_PMULTUW
 void recPMULTUW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTUW); }
 #else
-void recPMULTUW() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::MMI::PMULTUW); }
+void recPMULTUW()
+{
+	// Unsigned: prod = {(u64)Rs.UL[0]*(u64)Rt.UL[0], (u64)Rs.UL[2]*(u64)Rt.UL[2]}
+	// LO.SD[i] = sext32(prod[i] & 0xFFFFFFFF)
+	// HI.SD[i] = sext32(prod[i] >> 32)
+	// Rd.UD[i] = prod[i]  (if Rd)
+	if (_Rd_) GPR_DEL_CONST(_Rd_);
+	armLoadGPR128(a64::q0, _Rs_);
+	armLoadGPR128(a64::q1, _Rt_);
+	armAsm->Uzp1(a64::v0.V4S(), a64::v0.V4S(), a64::v0.V4S());
+	armAsm->Uzp1(a64::v1.V4S(), a64::v1.V4S(), a64::v1.V4S());
+	armAsm->Umull(a64::v2.V2D(), a64::v0.V2S(), a64::v1.V2S());
+	armAsm->Xtn(a64::v3.V2S(), a64::v2.V2D());
+	armAsm->Sxtl(a64::v3.V2D(), a64::v3.V2S());
+	armAsm->Str(a64::q3, a64::MemOperand(RCPUSTATE, LO_OFFSET));
+	armAsm->Sshr(a64::v4.V2D(), a64::v2.V2D(), 32);
+	armAsm->Str(a64::q4, a64::MemOperand(RCPUSTATE, HI_OFFSET));
+	if (_Rd_) armStoreGPR128(_Rd_, a64::q2);
+}
 #endif
 
 #if ISTUB_PDIVUW

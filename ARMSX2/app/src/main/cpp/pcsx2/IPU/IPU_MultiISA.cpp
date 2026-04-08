@@ -269,10 +269,106 @@ __ri static void IDCT_ColPass_NEON(s16* block, int col_start)
 	vst1_s16(block + 6*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a1, b1), 17)));
 	vst1_s16(block + 7*8 + col_start, vmovn_s32(vshrq_n_s32(vsubq_s32(a0, b0), 17)));
 }
+
+// NEON row pass: process 4 rows simultaneously (row_start = 0 or 4).
+// Uses a 4×8 ↔ 8×4 transpose to gather column vectors, applies the same butterfly
+// as the column pass but with the row-pass constants: bias=128, shift=8.
+__ri static void IDCT_RowPass_NEON(s16* block, int row_start)
+{
+	// Load 4 rows
+	int16x8_t r0 = vld1q_s16(block + (row_start+0)*8);
+	int16x8_t r1 = vld1q_s16(block + (row_start+1)*8);
+	int16x8_t r2 = vld1q_s16(block + (row_start+2)*8);
+	int16x8_t r3 = vld1q_s16(block + (row_start+3)*8);
+
+	// 4×8 → 8×4 transpose: gather one column per vector across 4 rows.
+	// Step 1: interleave s16 pairs from adjacent rows (low/high halves separately)
+	int16x4x2_t t01_lo = vtrn_s16(vget_low_s16(r0), vget_low_s16(r1));
+	int16x4x2_t t23_lo = vtrn_s16(vget_low_s16(r2), vget_low_s16(r3));
+	int16x4x2_t t01_hi = vtrn_s16(vget_high_s16(r0), vget_high_s16(r1));
+	int16x4x2_t t23_hi = vtrn_s16(vget_high_s16(r2), vget_high_s16(r3));
+	// After step 1 (example for lo):
+	//   t01_lo.val[0] = {r0[0],r1[0], r0[2],r1[2]}   t23_lo.val[0] = {r2[0],r3[0], r2[2],r3[2]}
+	//   t01_lo.val[1] = {r0[1],r1[1], r0[3],r1[3]}   t23_lo.val[1] = {r2[1],r3[1], r2[3],r3[3]}
+
+	// Step 2: interleave s32 pairs to merge row-pairs, giving 8 column vectors
+	int32x2x2_t u02_lo = vtrn_s32(vreinterpret_s32_s16(t01_lo.val[0]), vreinterpret_s32_s16(t23_lo.val[0]));
+	int32x2x2_t u13_lo = vtrn_s32(vreinterpret_s32_s16(t01_lo.val[1]), vreinterpret_s32_s16(t23_lo.val[1]));
+	int32x2x2_t u46_hi = vtrn_s32(vreinterpret_s32_s16(t01_hi.val[0]), vreinterpret_s32_s16(t23_hi.val[0]));
+	int32x2x2_t u57_hi = vtrn_s32(vreinterpret_s32_s16(t01_hi.val[1]), vreinterpret_s32_s16(t23_hi.val[1]));
+	// Reinterpreted as s16x4: u02_lo.val[0]=col0, .val[1]=col2
+	//   u13_lo.val[0]=col1, .val[1]=col3
+	//   u46_hi.val[0]=col4, .val[1]=col6
+	//   u57_hi.val[0]=col5, .val[1]=col7
+
+	// Widen column vectors to s32 for arithmetic
+	int32x4_t d0 = vmovl_s16(vreinterpret_s16_s32(u02_lo.val[0]));
+	int32x4_t d1 = vmovl_s16(vreinterpret_s16_s32(u13_lo.val[0]));
+	int32x4_t d2 = vmovl_s16(vreinterpret_s16_s32(u02_lo.val[1]));
+	int32x4_t d3 = vmovl_s16(vreinterpret_s16_s32(u13_lo.val[1]));
+	int32x4_t d4 = vmovl_s16(vreinterpret_s16_s32(u46_hi.val[0]));
+	int32x4_t d5 = vmovl_s16(vreinterpret_s16_s32(u57_hi.val[0]));
+	int32x4_t d6 = vmovl_s16(vreinterpret_s16_s32(u46_hi.val[1]));
+	int32x4_t d7 = vmovl_s16(vreinterpret_s16_s32(u57_hi.val[1]));
+
+	// Even part — same butterfly as IDCT_ColPass_NEON, row-pass bias=128
+	int32x4_t dd0 = vaddq_s32(vshlq_n_s32(d0, 11), vdupq_n_s32(128));
+	int32x4_t dd2 = vshlq_n_s32(d2, 11);
+	int32x4_t t0  = vaddq_s32(dd0, dd2);
+	int32x4_t t1  = vsubq_s32(dd0, dd2);
+	int32x4_t t2  = vmlaq_n_s32(vmulq_n_s32(d3, W6), d1, W2);
+	int32x4_t t3  = vmlsq_n_s32(vmulq_n_s32(d1, W6), d3, W2);
+	int32x4_t a0  = vaddq_s32(t0, t2);
+	int32x4_t a1  = vaddq_s32(t1, t3);
+	int32x4_t a2  = vsubq_s32(t1, t3);
+	int32x4_t a3  = vsubq_s32(t0, t2);
+
+	// Odd part
+	int32x4_t bt0 = vmlaq_n_s32(vmulq_n_s32(d7, W7), d4, W1);
+	int32x4_t bt1 = vmlsq_n_s32(vmulq_n_s32(d4, W7), d7, W1);
+	int32x4_t bt2 = vmlaq_n_s32(vmulq_n_s32(d5, W3), d6, W5);
+	int32x4_t bt3 = vmlsq_n_s32(vmulq_n_s32(d6, W3), d5, W5);
+	int32x4_t b0  = vaddq_s32(bt0, bt2);
+	int32x4_t b3  = vaddq_s32(bt1, bt3);
+	int32x4_t bta = vshrq_n_s32(vsubq_s32(bt0, bt2), 8);
+	int32x4_t btb = vshrq_n_s32(vsubq_s32(bt1, bt3), 8);
+	int32x4_t b1  = vmulq_n_s32(vaddq_s32(bta, btb), 181);
+	int32x4_t b2  = vmulq_n_s32(vsubq_s32(bta, btb), 181);
+
+	// Narrow with row-pass shift=8 → 8 output column vectors
+	int16x4_t out0 = vmovn_s32(vshrq_n_s32(vaddq_s32(a0, b0), 8));
+	int16x4_t out1 = vmovn_s32(vshrq_n_s32(vaddq_s32(a1, b1), 8));
+	int16x4_t out2 = vmovn_s32(vshrq_n_s32(vaddq_s32(a2, b2), 8));
+	int16x4_t out3 = vmovn_s32(vshrq_n_s32(vaddq_s32(a3, b3), 8));
+	int16x4_t out4 = vmovn_s32(vshrq_n_s32(vsubq_s32(a3, b3), 8));
+	int16x4_t out5 = vmovn_s32(vshrq_n_s32(vsubq_s32(a2, b2), 8));
+	int16x4_t out6 = vmovn_s32(vshrq_n_s32(vsubq_s32(a1, b1), 8));
+	int16x4_t out7 = vmovn_s32(vshrq_n_s32(vsubq_s32(a0, b0), 8));
+
+	// 8×4 → 4×8 inverse transpose: reconstruct 4 row vectors from 8 column vectors
+	int16x4x2_t rt01 = vtrn_s16(out0, out1);
+	int16x4x2_t rt23 = vtrn_s16(out2, out3);
+	int16x4x2_t rt45 = vtrn_s16(out4, out5);
+	int16x4x2_t rt67 = vtrn_s16(out6, out7);
+
+	int32x2x2_t rs02 = vtrn_s32(vreinterpret_s32_s16(rt01.val[0]), vreinterpret_s32_s16(rt23.val[0]));
+	int32x2x2_t rs13 = vtrn_s32(vreinterpret_s32_s16(rt01.val[1]), vreinterpret_s32_s16(rt23.val[1]));
+	int32x2x2_t rs46 = vtrn_s32(vreinterpret_s32_s16(rt45.val[0]), vreinterpret_s32_s16(rt67.val[0]));
+	int32x2x2_t rs57 = vtrn_s32(vreinterpret_s32_s16(rt45.val[1]), vreinterpret_s32_s16(rt67.val[1]));
+
+	vst1q_s16(block + (row_start+0)*8, vcombine_s16(vreinterpret_s16_s32(rs02.val[0]), vreinterpret_s16_s32(rs46.val[0])));
+	vst1q_s16(block + (row_start+1)*8, vcombine_s16(vreinterpret_s16_s32(rs13.val[0]), vreinterpret_s16_s32(rs57.val[0])));
+	vst1q_s16(block + (row_start+2)*8, vcombine_s16(vreinterpret_s16_s32(rs02.val[1]), vreinterpret_s16_s32(rs46.val[1])));
+	vst1q_s16(block + (row_start+3)*8, vcombine_s16(vreinterpret_s16_s32(rs13.val[1]), vreinterpret_s16_s32(rs57.val[1])));
+}
 #endif // ARCH_ARM64
 
 __ri static void IDCT_Block(s16* block)
 {
+#if defined(ARCH_ARM64)
+	IDCT_RowPass_NEON(block, 0);
+	IDCT_RowPass_NEON(block, 4);
+#else
 	for (int i = 0; i < 8; i++)
 	{
 		s16* const rblock = block + 8 * i;
@@ -330,6 +426,7 @@ __ri static void IDCT_Block(s16* block)
 		rblock[6] = (a1 - b1) >> 8;
 		rblock[7] = (a0 - b0) >> 8;
 	}
+#endif
 
 #if defined(ARCH_ARM64)
 	IDCT_ColPass_NEON(block, 0);
@@ -391,6 +488,12 @@ __ri static void IDCT_Copy(s16* block, u8* dest, const int stride)
 
 	for (int i = 0; i < 8; i++)
 	{
+#if defined(ARCH_ARM64)
+		// vqmovun_s16: saturating narrow s16→u8, clamping to [0,255].
+		// Equivalent to the LUT but handles the full s16 range safely.
+		vst1_u8(dest, vqmovun_s16(vld1q_s16(block)));
+		vst1q_s16(block, vdupq_n_s16(0));
+#else
 		dest[0] = (g_idct_clip_lut.data() + 384)[block[0]];
 		dest[1] = (g_idct_clip_lut.data() + 384)[block[1]];
 		dest[2] = (g_idct_clip_lut.data() + 384)[block[2]];
@@ -399,9 +502,8 @@ __ri static void IDCT_Copy(s16* block, u8* dest, const int stride)
 		dest[5] = (g_idct_clip_lut.data() + 384)[block[5]];
 		dest[6] = (g_idct_clip_lut.data() + 384)[block[6]];
 		dest[7] = (g_idct_clip_lut.data() + 384)[block[7]];
-
 		std::memset(block, 0, 16);
-
+#endif
 		dest += stride;
 		block += 8;
 	}

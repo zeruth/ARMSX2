@@ -72,6 +72,37 @@ static void emitFmacWriteback(int64_t dst_off, u32 xyzw)
 	armEmitCall(reinterpret_cast<const void*>(vu1_fmac_writeback));
 }
 
+// Writeback for ops that DO NOT update MAC/Status flags (MAX, MINI, ABS).
+// The interpreter's _vuMAX/_vuMINI*/_vuABS write directly to VF[fd] via
+// applyMinMax/applyUnaryFunction, neither of which touches macflag/statusflag.
+// Going through vu1_fmac_writeback would corrupt MAC flags that subsequent
+// FMAND/FCAND/etc. read — observed as geometry dropouts in San Andreas.
+//
+// fd: destination register index (compile-time known via VU1.code).
+//     Interpreter returns immediately when fd==0, so no write *and* no flag
+//     update — match that exactly (cannot accidentally write VF[0]).
+// xyzw: write mask (compile-time known via VU1.code bits 21-24).
+// Result must be in v5.4S.
+static void emitNoFlagWriteback(u32 fd, u32 xyzw)
+{
+	if (fd == 0) return; // VF[0] hardwired; interpreter no-ops the whole insn
+	const int64_t dst_off = vfOff(fd);
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Str(q5, MemOperand(VU1_BASE_REG, dst_off));
+		return;
+	}
+
+	// Partial write: load existing dst into v4, merge selected lanes from v5
+	armAsm->Ldr(q4, MemOperand(VU1_BASE_REG, dst_off));
+	if (xyzw & 8) armAsm->Mov(v4.V4S(), 0, v5.V4S(), 0); // x
+	if (xyzw & 4) armAsm->Mov(v4.V4S(), 1, v5.V4S(), 1); // y
+	if (xyzw & 2) armAsm->Mov(v4.V4S(), 2, v5.V4S(), 2); // z
+	if (xyzw & 1) armAsm->Mov(v4.V4S(), 3, v5.V4S(), 3); // w
+	armAsm->Str(q4, MemOperand(VU1_BASE_REG, dst_off));
+}
+
 // ============================================================================
 //  NEON FMAC emit patterns
 //
@@ -179,34 +210,66 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 	emitFmacWriteback(dst_off, xyzw);
 }
 
-// --- MAX/MINI: dst = fmaxnm/fminnm(VF[fs], src2) ---
-// ARM64 FMAXNM/FMINNM: returns the non-NaN operand when one is NaN,
-// matching PS2 VU MAX/MINI semantics (no invalid-operation exceptions).
-static void emitMaxFmac(bool isMini, u32 fs, int64_t dst_off, u32 xyzw)
+// --- MAX/MINI: bit-exact emulation of interpreter fp_max / fp_min ---
+//
+// PS2 VU MAX/MINI are NOT IEEE float compares: the interpreter does a
+// sign-magnitude integer compare on the raw 32-bit bit patterns:
+//
+//     fp_max(a,b) = (both negative) ? signed_min(a,b) : signed_max(a,b)
+//     fp_min(a,b) = (both negative) ? signed_max(a,b) : signed_min(a,b)
+//
+// FMAXNM/FMINNM cannot be substituted. Two divergences hit real game data:
+//   1. NaN inputs — FMAXNM picks the non-NaN operand; fp_max preserves the
+//      NaN bit pattern via integer compare.
+//   2. Denormal inputs — under VU FPCR (FZ=1) FMAXNM flushes denormals to
+//      ±0 before comparing; fp_max preserves the denormal bit pattern.
+//
+// Observed in San Andreas as shadow corruption: a full-vector `MAX vfX,vfY,vf0`
+// (clamp-to-zero against vf0 = {0,0,0,1}) silently zeroed NaN/denormal lanes
+// the rest of the VU program expected to flow through bit-perfectly.
+//
+// MUST use emitNoFlagWriteback — MAX/MINI on PS2 don't update MAC/Status.
+static void emitMaxFmac(bool isMini, u32 fs, u32 fd, u32 xyzw)
 {
 	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
 	// v1 must already be loaded with src2
-	if (CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1))
-	{
-		emitVuClampSetup();
-		emitVuClampVec(v0.V4S());
-		emitVuClampVec(v1.V4S());
-	}
+
+	// Signed integer max/min on 32-bit lanes.
+	armAsm->Smax(v2.V4S(), v0.V4S(), v1.V4S());
+	armAsm->Smin(v3.V4S(), v0.V4S(), v1.V4S());
+
+	// Build "both negative" mask in v6: arithmetic-shift right by 31 splats
+	// the sign bit, AND of the two splats is 0xFFFFFFFF per lane iff both
+	// inputs had the sign bit set.
+	armAsm->Sshr(v4.V4S(), v0.V4S(), 31);
+	armAsm->Sshr(v6.V4S(), v1.V4S(), 31);
+	armAsm->And(v6.V16B(), v4.V16B(), v6.V16B());
+
+	// Select per lane: result = both_neg ? swapped : signed_(max|min).
+	// BIF Vd, Vn, Vm copies Vn into Vd where Vm bit is 0, else keeps Vd.
 	if (isMini)
-		armAsm->Fminnm(v5.V4S(), v0.V4S(), v1.V4S());
+	{
+		// fp_min: both_neg → signed_max ; otherwise → signed_min
+		armAsm->Mov(v5.V16B(), v2.V16B());            // start = signed_max
+		armAsm->Bif(v5.V16B(), v3.V16B(), v6.V16B()); // mask=0 → signed_min
+	}
 	else
-		armAsm->Fmaxnm(v5.V4S(), v0.V4S(), v1.V4S());
-	emitFmacWriteback(dst_off, xyzw);
+	{
+		// fp_max: both_neg → signed_min ; otherwise → signed_max
+		armAsm->Mov(v5.V16B(), v3.V16B());            // start = signed_min
+		armAsm->Bif(v5.V16B(), v2.V16B(), v6.V16B()); // mask=0 → signed_max
+	}
+	emitNoFlagWriteback(fd, xyzw);
 }
 
-// --- ABS: dst = fabs(VF[fs]) ---
-// Absolute value doesn't need a second operand or clamp on input
-// (the result is non-negative and bounded by the clamped input magnitude).
-static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
+// --- ABS: VF[ft] = fabs(VF[fs]) ---
+// Interpreter (applyUnaryFunction<vuOpABS>) reads from _Fs_ and writes to _Ft_,
+// returns early when _Ft_==0, and does not touch MAC/Status flags.
+static void emitAbsFmac(u32 fs, u32 ft, u32 xyzw)
 {
 	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
 	armAsm->Fabs(v5.V4S(), v0.V4S());
-	emitFmacWriteback(dst_off, xyzw);
+	emitNoFlagWriteback(ft, xyzw);
 }
 
 // ============================================================================
@@ -321,7 +384,7 @@ static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
 		const u32 ft = (VU1.code >> 16) & 0x1F; \
 		const u32 xyzw = (VU1.code >> 21) & 0xF; \
 		emitLoadBroadcast(ft, comp); \
-		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+		emitMaxFmac(isMini, fs, fd, xyzw); \
 	}
 
 #define FMAC_MAXMINI_I(name, isMini) \
@@ -330,7 +393,7 @@ static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
 		const u32 fs = (VU1.code >> 11) & 0x1F; \
 		const u32 xyzw = (VU1.code >> 21) & 0xF; \
 		emitLoadQI(viOff(REG_I)); \
-		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+		emitMaxFmac(isMini, fs, fd, xyzw); \
 	}
 
 #define FMAC_MAXMINI_FULL(name, isMini) \
@@ -340,16 +403,151 @@ static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
 		const u32 ft = (VU1.code >> 16) & 0x1F; \
 		const u32 xyzw = (VU1.code >> 21) & 0xF; \
 		armAsm->Ldr(q1, MemOperand(VU1_BASE_REG, vfOff(ft))); \
-		emitMaxFmac(isMini, fs, vfOff(fd), xyzw); \
+		emitMaxFmac(isMini, fs, fd, xyzw); \
 	}
 
 // ABS: Ft.xyzw = |Ft.xyzw|  (ft is both source and destination)
+// ABS: VF[ft] = |VF[fs]|  (interpreter reads _Fs_, writes _Ft_).
+// Most code uses fs==ft (in-place), but the JIT must follow the encoding.
 #define FMAC_ABS(name) \
 	void recVU1_##name() { \
+		const u32 fs = (VU1.code >> 11) & 0x1F; \
 		const u32 ft = (VU1.code >> 16) & 0x1F; \
 		const u32 xyzw = (VU1.code >> 21) & 0xF; \
-		emitAbsFmac(ft, vfOff(ft), xyzw); \
+		emitAbsFmac(fs, ft, xyzw); \
 	}
+
+// ============================================================================
+//  FTOI / ITOF — native NEON float/int conversions (mirrors iVU0Upper_arm64.cpp)
+// ============================================================================
+
+static void emitFTOI(int fbits)
+{
+	const u32 ft   = (VU1.code >> 16) & 0x1F;
+	const u32 fs   = (VU1.code >> 11) & 0x1F;
+	const u32 xyzw = (VU1.code >> 21) & 0xF;
+	if (ft == 0) return;
+	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+	if (CHECK_VU_SIGN_OVERFLOW(1))
+	{
+		emitVuClampSetup();
+		emitVuClampVec(v0.V4S());
+	}
+	if (fbits > 0)
+		armAsm->Fcvtzs(v1.V4S(), v0.V4S(), fbits);
+	else
+		armAsm->Fcvtzs(v1.V4S(), v0.V4S());
+	if (xyzw == 0xF)
+	{
+		armAsm->Str(q1, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+	else
+	{
+		armAsm->Ldr(q5, MemOperand(VU1_BASE_REG, vfOff(ft)));
+		if (xyzw & 8) armAsm->Mov(v5.V4S(), 0, v1.V4S(), 0);
+		if (xyzw & 4) armAsm->Mov(v5.V4S(), 1, v1.V4S(), 1);
+		if (xyzw & 2) armAsm->Mov(v5.V4S(), 2, v1.V4S(), 2);
+		if (xyzw & 1) armAsm->Mov(v5.V4S(), 3, v1.V4S(), 3);
+		armAsm->Str(q5, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+}
+
+static void emitITOF(int fbits)
+{
+	const u32 ft   = (VU1.code >> 16) & 0x1F;
+	const u32 fs   = (VU1.code >> 11) & 0x1F;
+	const u32 xyzw = (VU1.code >> 21) & 0xF;
+	if (ft == 0) return;
+	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+	if (fbits > 0)
+		armAsm->Scvtf(v1.V4S(), v0.V4S(), fbits);
+	else
+		armAsm->Scvtf(v1.V4S(), v0.V4S());
+	if (xyzw == 0xF)
+	{
+		armAsm->Str(q1, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+	else
+	{
+		armAsm->Ldr(q5, MemOperand(VU1_BASE_REG, vfOff(ft)));
+		if (xyzw & 8) armAsm->Mov(v5.V4S(), 0, v1.V4S(), 0);
+		if (xyzw & 4) armAsm->Mov(v5.V4S(), 1, v1.V4S(), 1);
+		if (xyzw & 2) armAsm->Mov(v5.V4S(), 2, v1.V4S(), 2);
+		if (xyzw & 1) armAsm->Mov(v5.V4S(), 3, v1.V4S(), 3);
+		armAsm->Str(q5, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+}
+
+// ============================================================================
+//  C wrappers for CLIP / OPMULA / OPMSUB
+// ============================================================================
+
+static float vu1Double(u32 f)
+{
+	switch (f & 0x7f800000)
+	{
+		case 0x0:
+			f &= 0x80000000;
+			return *(float*)&f;
+		case 0x7f800000:
+			if (CHECK_VU_SIGN_OVERFLOW(1))
+			{
+				u32 d = (f & 0x80000000) | 0x7f7fffff;
+				return *(float*)&d;
+			}
+			break;
+	}
+	return *(float*)&f;
+}
+
+static void vu1_CLIP(VURegs* VU)
+{
+	const u32 fs = (VU->code >> 11) & 0x1F;
+	const u32 ft = (VU->code >> 16) & 0x1F;
+	s32 value    = static_cast<s32>(VU->VF[ft].i.w);
+	value = (value & 0x7f800000) ? value & 0x7fffffff : 0x007fffff;
+	VU->clipflag <<= 6;
+	if (static_cast<s32>(VU->VF[fs].i.x)               > value) VU->clipflag |= 0x01;
+	if (static_cast<s32>(VU->VF[fs].i.x ^ 0x80000000u) > value) VU->clipflag |= 0x02;
+	if (static_cast<s32>(VU->VF[fs].i.y)               > value) VU->clipflag |= 0x04;
+	if (static_cast<s32>(VU->VF[fs].i.y ^ 0x80000000u) > value) VU->clipflag |= 0x08;
+	if (static_cast<s32>(VU->VF[fs].i.z)               > value) VU->clipflag |= 0x10;
+	if (static_cast<s32>(VU->VF[fs].i.z ^ 0x80000000u) > value) VU->clipflag |= 0x20;
+	VU->clipflag &= 0xFFFFFF;
+}
+
+static void vu1_OPMULA(VURegs* VU)
+{
+	const u32 fs = (VU->code >> 11) & 0x1F;
+	const u32 ft = (VU->code >> 16) & 0x1F;
+	VU->ACC.i.x = VU_MACx_UPDATE(VU, vu1Double(VU->VF[fs].i.y) * vu1Double(VU->VF[ft].i.z));
+	VU->ACC.i.y = VU_MACy_UPDATE(VU, vu1Double(VU->VF[fs].i.z) * vu1Double(VU->VF[ft].i.x));
+	VU->ACC.i.z = VU_MACz_UPDATE(VU, vu1Double(VU->VF[fs].i.x) * vu1Double(VU->VF[ft].i.y));
+	VU_STAT_UPDATE(VU);
+}
+
+static void vu1_OPMSUB(VURegs* VU)
+{
+	const u32 fs = (VU->code >> 11) & 0x1F;
+	const u32 ft = (VU->code >> 16) & 0x1F;
+	const u32 fd = (VU->code >>  6) & 0x1F;
+	float ftx = vu1Double(VU->VF[ft].i.x);
+	float fty = vu1Double(VU->VF[ft].i.y);
+	float ftz = vu1Double(VU->VF[ft].i.z);
+	float fsx = vu1Double(VU->VF[fs].i.x);
+	float fsy = vu1Double(VU->VF[fs].i.y);
+	float fsz = vu1Double(VU->VF[fs].i.z);
+	u32 rx = VU_MACx_UPDATE(VU, vu1Double(VU->ACC.i.x) - fsy * ftz);
+	u32 ry = VU_MACy_UPDATE(VU, vu1Double(VU->ACC.i.y) - fsz * ftx);
+	u32 rz = VU_MACz_UPDATE(VU, vu1Double(VU->ACC.i.z) - fsx * fty);
+	if (fd != 0)
+	{
+		VU->VF[fd].i.x = rx;
+		VU->VF[fd].i.y = ry;
+		VU->VF[fd].i.z = rz;
+	}
+	VU_STAT_UPDATE(VU);
+}
 
 // ============================================================================
 //  Per-instruction interp stub toggles (1 = interp, 0 = native)
@@ -552,24 +750,21 @@ static void emitAbsFmac(u32 fs, int64_t dst_off, u32 xyzw)
 #endif
 
 // ============================================================================
-//  Code-emitter macro: called at block-compile time to emit an ARM64 BL to
-//  the specific interpreter function for this upper opcode.
-//
-//  VU1.code is set by CompileBlock (both as a compile-time variable used here
-//  to resolve VU1_UPPER_OPCODE[…], and as a runtime store emitted before
-//  calling this function).
+//  Code-emitter macros: called at block-compile time.
+//  VU1.code is set by CompileBlock before each of these is called.
 // ============================================================================
 
-// INTERP path (ISTUB=1): emit BL to the interpreter function.
+// INTERP path (ISTUB=1): emit BL to the interpreter function via opcode table.
 #define REC_VU1_UPPER_INTERP(name) \
 	void recVU1_##name() { \
 		armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); \
 	}
 
-// Non-INTERP fallback for non-FMAC instructions (ISTUB=0, no native codegen yet).
-#define REC_VU1_UPPER_EMIT(name) \
+// C-wrapper path (ISTUB=0): emit BL to a vu1_* C helper.
+#define REC_VU1_UPPER_CALL(name) \
 	void recVU1_##name() { \
-		armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); \
+		armAsm->Mov(x0, VU1_BASE_REG); \
+		armEmitCall(reinterpret_cast<const void*>(vu1_##name)); \
 	}
 
 // ============================================================================
@@ -1121,19 +1316,19 @@ FMAC_ABS(ABS)
 #if ISTUB_VU_CLIP
 REC_VU1_UPPER_INTERP(CLIP)
 #else
-void recVU1_CLIP() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+REC_VU1_UPPER_CALL(CLIP)
 #endif
 
 #if ISTUB_VU_OPMULA
 REC_VU1_UPPER_INTERP(OPMULA)
 #else
-void recVU1_OPMULA() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+REC_VU1_UPPER_CALL(OPMULA)
 #endif
 
 #if ISTUB_VU_OPMSUB
 REC_VU1_UPPER_INTERP(OPMSUB)
 #else
-void recVU1_OPMSUB() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+REC_VU1_UPPER_CALL(OPMSUB)
 #endif
 
 #if ISTUB_VU_NOP
@@ -1149,49 +1344,49 @@ void recVU1_NOP() { } // VU NOP: nothing to emit
 #if ISTUB_VU_FTOI0
 REC_VU1_UPPER_INTERP(FTOI0)
 #else
-void recVU1_FTOI0() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_FTOI0()  { emitFTOI(0);  }
 #endif
 
 #if ISTUB_VU_FTOI4
 REC_VU1_UPPER_INTERP(FTOI4)
 #else
-void recVU1_FTOI4() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_FTOI4()  { emitFTOI(4);  }
 #endif
 
 #if ISTUB_VU_FTOI12
 REC_VU1_UPPER_INTERP(FTOI12)
 #else
-void recVU1_FTOI12() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_FTOI12() { emitFTOI(12); }
 #endif
 
 #if ISTUB_VU_FTOI15
 REC_VU1_UPPER_INTERP(FTOI15)
 #else
-void recVU1_FTOI15() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_FTOI15() { emitFTOI(15); }
 #endif
 
 #if ISTUB_VU_ITOF0
 REC_VU1_UPPER_INTERP(ITOF0)
 #else
-void recVU1_ITOF0() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_ITOF0()  { emitITOF(0);  }
 #endif
 
 #if ISTUB_VU_ITOF4
 REC_VU1_UPPER_INTERP(ITOF4)
 #else
-void recVU1_ITOF4() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_ITOF4()  { emitITOF(4);  }
 #endif
 
 #if ISTUB_VU_ITOF12
 REC_VU1_UPPER_INTERP(ITOF12)
 #else
-void recVU1_ITOF12() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_ITOF12() { emitITOF(12); }
 #endif
 
 #if ISTUB_VU_ITOF15
 REC_VU1_UPPER_INTERP(ITOF15)
 #else
-void recVU1_ITOF15() { armEmitCall(reinterpret_cast<const void*>(VU1_UPPER_OPCODE[VU1.code & 0x3f])); }
+void recVU1_ITOF15() { emitITOF(15); }
 #endif
 
 // ============================================================================
