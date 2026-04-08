@@ -96,28 +96,32 @@ void recADDU()
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR32(RWSCRATCH, _Rs_);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Sxtw(rd, rs.W());
 		return;
 	}
 	if (!_Rs_)
 	{
-		armLoadGPR32(RWSCRATCH, _Rt_);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Sxtw(rd, rt.W());
 		return;
 	}
 	if (_Rs_ == _Rt_)
 	{
-		armLoadGPR32(RWSCRATCH, _Rs_);
-		armAsm->Add(RWSCRATCH, RWSCRATCH, RWSCRATCH);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Add(rd.W(), rs.W(), rs.W());
+		armAsm->Sxtw(rd, rd.W());
 		return;
 	}
 
-	armLoadGPR32(RWSCRATCH, _Rs_);
-	armLoadGPR32(RWSCRATCH2, _Rt_);
-	armAsm->Add(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
-	armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Add(rd.W(), rs.W(), rt.W());
+	armAsm->Sxtw(rd, rd.W());
 }
 #endif
 
@@ -151,22 +155,25 @@ void recSUBU()
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR32(RWSCRATCH, _Rs_);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Sxtw(rd, rs.W());
 		return;
 	}
 	if (!_Rs_)
 	{
-		armLoadGPR32(RWSCRATCH, _Rt_);
-		armAsm->Neg(RWSCRATCH, RWSCRATCH);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Neg(rd.W(), rt.W());
+		armAsm->Sxtw(rd, rd.W());
 		return;
 	}
 
-	armLoadGPR32(RWSCRATCH, _Rs_);
-	armLoadGPR32(RWSCRATCH2, _Rt_);
-	armAsm->Sub(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
-	armStoreGPR64SignExt32(RWSCRATCH, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Sub(rd.W(), rs.W(), rt.W());
+	armAsm->Sxtw(rd, rd.W());
 }
 #endif
 
@@ -196,23 +203,25 @@ void recADDIU()
 	const s32 imm = _Imm_;
 	if (imm == 0)
 	{
-		armLoadGPR32(RWSCRATCH, _Rs_);
-		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rt = armGprAlloc(_Rt_, true);
+		armAsm->Sxtw(rt, rs.W());
 		return;
 	}
 	if (!_Rs_)
 	{
-		armAsm->Mov(RSCRATCHGPR, static_cast<u64>(static_cast<s64>(imm)));
-		armStoreGPR64(RSCRATCHGPR, _Rt_);
+		auto rt = armGprAlloc(_Rt_, true);
+		armAsm->Mov(rt, static_cast<u64>(static_cast<s64>(imm)));
 		return;
 	}
 
-	armLoadGPR32(RWSCRATCH, _Rs_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, true);
 	if (imm > 0)
-		armAsm->Add(RWSCRATCH, RWSCRATCH, imm);
+		armAsm->Add(rt.W(), rs.W(), imm);
 	else
-		armAsm->Sub(RWSCRATCH, RWSCRATCH, -imm);
-	armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
+		armAsm->Sub(rt.W(), rs.W(), -imm);
+	armAsm->Sxtw(rt, rt.W());
 }
 #endif
 
@@ -246,28 +255,32 @@ void recDADDU()
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rs.GetCode())
+			armAsm->Mov(rd, rs);
 		return;
 	}
 	if (!_Rs_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rt_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rt.GetCode())
+			armAsm->Mov(rd, rt);
 		return;
 	}
 	if (_Rs_ == _Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armAsm->Add(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Add(rd, rs, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Add(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Add(rd, rs, rt);
 }
 #endif
 
@@ -301,22 +314,24 @@ void recDSUBU()
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rs.GetCode())
+			armAsm->Mov(rd, rs);
 		return;
 	}
 	if (!_Rs_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rt_);
-		armAsm->Neg(RSCRATCHGPR, RSCRATCHGPR);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Neg(rd, rt);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Sub(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Sub(rd, rs, rt);
 }
 #endif
 
@@ -346,23 +361,25 @@ void recDADDIU()
 	const s32 imm = _Imm_;
 	if (imm == 0)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rt_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rt = armGprAlloc(_Rt_, true);
+		if (rt.GetCode() != rs.GetCode())
+			armAsm->Mov(rt, rs);
 		return;
 	}
 	if (!_Rs_)
 	{
-		armAsm->Mov(RSCRATCHGPR, static_cast<u64>(static_cast<s64>(imm)));
-		armStoreGPR64(RSCRATCHGPR, _Rt_);
+		auto rt = armGprAlloc(_Rt_, true);
+		armAsm->Mov(rt, static_cast<u64>(static_cast<s64>(imm)));
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, true);
 	if (imm > 0)
-		armAsm->Add(RSCRATCHGPR, RSCRATCHGPR, imm);
+		armAsm->Add(rt, rs, imm);
 	else
-		armAsm->Sub(RSCRATCHGPR, RSCRATCHGPR, -imm);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+		armAsm->Sub(rt, rs, -imm);
 }
 #endif
 
@@ -395,15 +412,17 @@ void recAND()
 	}
 	if (_Rs_ == _Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rs.GetCode())
+			armAsm->Mov(rd, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->And(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->And(rd, rs, rt);
 }
 #endif
 
@@ -433,21 +452,25 @@ void recOR()
 	if (!_Rs_ || _Rs_ == _Rt_)
 	{
 		// 0 | rt = rt, or rs | rs = rs (MIPS "move" idiom)
-		armLoadGPR64(RSCRATCHGPR, _Rt_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rt.GetCode())
+			armAsm->Mov(rd, rt);
 		return;
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rs.GetCode())
+			armAsm->Mov(rd, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Orr(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Orr(rd, rs, rt);
 }
 #endif
 
@@ -476,21 +499,25 @@ void recXOR()
 	}
 	if (!_Rs_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rt_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rt.GetCode())
+			armAsm->Mov(rd, rt);
 		return;
 	}
 	if (!_Rt_)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		if (rd.GetCode() != rs.GetCode())
+			armAsm->Mov(rd, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Eor(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Eor(rd, rs, rt);
 }
 #endif
 
@@ -515,32 +542,32 @@ void recNOR()
 	if (!_Rs_ && !_Rt_)
 	{
 		// ~(0 | 0) = all ones
-		armAsm->Mov(RSCRATCHGPR, ~static_cast<u64>(0));
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Mov(rd, ~static_cast<u64>(0));
 		return;
 	}
 	if (_Rs_ == _Rt_ || !_Rt_)
 	{
 		// ~(rs | rs) = ~rs, or ~(rs | 0) = ~rs
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armAsm->Mvn(RSCRATCHGPR, RSCRATCHGPR);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Mvn(rd, rs);
 		return;
 	}
 	if (!_Rs_)
 	{
 		// ~(0 | rt) = ~rt
-		armLoadGPR64(RSCRATCHGPR, _Rt_);
-		armAsm->Mvn(RSCRATCHGPR, RSCRATCHGPR);
-		armStoreGPR64(RSCRATCHGPR, _Rd_);
+		auto rt = armGprAlloc(_Rt_, false);
+		auto rd = armGprAlloc(_Rd_, true);
+		armAsm->Mvn(rd, rt);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Orr(RSCRATCHGPR, RSCRATCHGPR, RSCRATCHGPR2);
-	armAsm->Mvn(RSCRATCHGPR, RSCRATCHGPR);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, false);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Orr(rd, rs, rt);
+	armAsm->Mvn(rd, rd);
 }
 #endif
 
@@ -572,9 +599,9 @@ void recANDI()
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->And(RSCRATCHGPR, RSCRATCHGPR, (u64)_ImmU_);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, true);
+	armAsm->And(rt, rs, (u64)_ImmU_);
 }
 #endif
 
@@ -597,14 +624,16 @@ void recORI()
 	if (_ImmU_ == 0)
 	{
 		// ORI with 0 is a move
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rt_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rt = armGprAlloc(_Rt_, true);
+		if (rt.GetCode() != rs.GetCode())
+			armAsm->Mov(rt, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Orr(RSCRATCHGPR, RSCRATCHGPR, (u64)_ImmU_);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, true);
+	armAsm->Orr(rt, rs, (u64)_ImmU_);
 }
 #endif
 
@@ -626,14 +655,16 @@ void recXORI()
 	armDelConstReg(_Rt_);
 	if (_ImmU_ == 0)
 	{
-		armLoadGPR64(RSCRATCHGPR, _Rs_);
-		armStoreGPR64(RSCRATCHGPR, _Rt_);
+		auto rs = armGprAlloc(_Rs_, false);
+		auto rt = armGprAlloc(_Rt_, true);
+		if (rt.GetCode() != rs.GetCode())
+			armAsm->Mov(rt, rs);
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Eor(RSCRATCHGPR, RSCRATCHGPR, (u64)_ImmU_);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+	auto rs = armGprAlloc(_Rs_, false);
+	auto rt = armGprAlloc(_Rt_, true);
+	armAsm->Eor(rt, rs, (u64)_ImmU_);
 }
 #endif
 
@@ -668,11 +699,12 @@ void recSLT()
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
-	armAsm->Cset(RSCRATCHGPR, a64::lt);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	// _Rs_ or _Rt_ may be 0 — use xzr in that case (no slot needed).
+	a64::Register rs = _Rs_ ? a64::Register(armGprAlloc(_Rs_, false)) : a64::xzr;
+	a64::Register rt = _Rt_ ? a64::Register(armGprAlloc(_Rt_, false)) : a64::xzr;
+	armAsm->Cmp(rs, rt);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Cset(rd, a64::lt);
 }
 #endif
 
@@ -700,11 +732,11 @@ void recSLTU()
 		return;
 	}
 
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armLoadGPR64(RSCRATCHGPR2, _Rt_);
-	armAsm->Cmp(RSCRATCHGPR, RSCRATCHGPR2);
-	armAsm->Cset(RSCRATCHGPR, a64::lo);
-	armStoreGPR64(RSCRATCHGPR, _Rd_);
+	a64::Register rs = _Rs_ ? a64::Register(armGprAlloc(_Rs_, false)) : a64::xzr;
+	a64::Register rt = _Rt_ ? a64::Register(armGprAlloc(_Rt_, false)) : a64::xzr;
+	armAsm->Cmp(rs, rt);
+	auto rd = armGprAlloc(_Rd_, true);
+	armAsm->Cset(rd, a64::lo);
 }
 #endif
 
@@ -731,12 +763,12 @@ void recSLTI()
 	}
 
 	armDelConstReg(_Rt_);
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
+	a64::Register rs = _Rs_ ? a64::Register(armGprAlloc(_Rs_, false)) : a64::xzr;
 	// VIXL MacroAssembler handles Cmp with immediate optimally:
 	// small positive → cmp, small negative → cmn, else → mov tmp + cmp
-	armAsm->Cmp(RSCRATCHGPR, static_cast<s64>(_Imm_));
-	armAsm->Cset(RSCRATCHGPR, a64::lt);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+	armAsm->Cmp(rs, static_cast<s64>(_Imm_));
+	auto rt = armGprAlloc(_Rt_, true);
+	armAsm->Cset(rt, a64::lt);
 }
 #endif
 
@@ -757,10 +789,10 @@ void recSLTIU()
 	}
 
 	armDelConstReg(_Rt_);
-	armLoadGPR64(RSCRATCHGPR, _Rs_);
-	armAsm->Cmp(RSCRATCHGPR, static_cast<s64>(_Imm_));
-	armAsm->Cset(RSCRATCHGPR, a64::lo);
-	armStoreGPR64(RSCRATCHGPR, _Rt_);
+	a64::Register rs = _Rs_ ? a64::Register(armGprAlloc(_Rs_, false)) : a64::xzr;
+	armAsm->Cmp(rs, static_cast<s64>(_Imm_));
+	auto rt = armGprAlloc(_Rt_, true);
+	armAsm->Cset(rt, a64::lo);
 }
 #endif
 

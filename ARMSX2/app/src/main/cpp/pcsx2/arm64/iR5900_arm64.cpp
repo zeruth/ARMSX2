@@ -882,6 +882,15 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			// No recompiler implementation — fall back to interpreter
 			armCallInterpreter(opcode.interpret);
 		}
+
+		// Phase D: op-local GPR cache discipline.
+		// Migrated ops (ALU only as of Phase D) use armGprAlloc to bind MIPS
+		// GPRs to host pool regs within their codegen. Commit any dirty slots
+		// to memory and drop the cache before moving on to the next opcode —
+		// non-migrated ops still read/write memory directly via armLoadGPR /
+		// armStoreGPR, so the cache must not survive across the boundary.
+		// No-op when nothing was cached (the common case).
+		armGprInvalidateAll();
 	}
 
 	if (delayslot)
