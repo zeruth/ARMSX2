@@ -1066,6 +1066,7 @@ set(pcsx2arm64Sources
 	arm64/iR5900Branch_arm64.cpp
 	arm64/iR5900Move_arm64.cpp
 	arm64/iR5900ALU_arm64.cpp
+	arm64/iR5900MultDiv_arm64.cpp
 	arm64/iR5900Shift_arm64.cpp
 	arm64/iR5900COP0_arm64.cpp
 	arm64/iR5900COP1_arm64.cpp
@@ -1073,7 +1074,7 @@ set(pcsx2arm64Sources
 	arm64/iR5900MMI_arm64.cpp
 	arm64/iR5900LoadStore_arm64.cpp
 	arm64/iR5900Trap_arm64.cpp
-	arm64/iR5900Stubs_arm64.cpp
+	arm64/iR5900Misc_arm64.cpp
 	arm64/intNativeOps.cpp
 	arm64/iVU0micro_arm64.cpp
 	arm64/iVU0Upper_arm64.cpp
