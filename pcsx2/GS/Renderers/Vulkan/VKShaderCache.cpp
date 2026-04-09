@@ -143,8 +143,10 @@ bool dyn_shaderc::Open()
 #else
 	// Use versioned, bundle post-processing adds it..
 	const std::string libname = DynamicLibrary::GetVersionedFilename("shaderc_shared", 1);
+	// Debian package the library as libshaderc.so.1
+	const std::string libname_fallback = DynamicLibrary::GetVersionedFilename("shaderc", 1);
 #endif
-	if (!s_library.Open(libname.c_str(), &error))
+	if (!s_library.Open(libname.c_str(), &error) && !s_library.Open(libname_fallback.c_str(), &error))
 	{
 		ERROR_LOG("Failed to load shaderc: {}", error.GetDescription());
 		return false;
