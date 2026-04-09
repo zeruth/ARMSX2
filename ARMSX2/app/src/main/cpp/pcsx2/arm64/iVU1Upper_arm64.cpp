@@ -16,6 +16,23 @@
 using namespace vixl::aarch64;
 
 // ============================================================================
+//  Flag-deferral state
+//
+//  Set by CompileBlock before each recVU1_UpperTable[] dispatch. When false,
+//  emitBinaryFmac/emitTernaryFmac skip the BL vu1_fmac_writeback (which costs
+//  ~50ns per FMAC for MAC/STAT flag updates) and instead emit an inline
+//  NEON clamp + store. The analysis is performed in iVU1micro_arm64.cpp:
+//  an FMAC pair "needs flags" if either (a) it's one of the last 4 FMAC
+//  pairs in the block (cross-block conservative — flags must reach VI[FLAG]
+//  for the next block to read them) or (b) some later pair in the same
+//  block reads MAC/STATUS/CLIP via FMxxx/FSxxx/FCxxx.
+//
+//  Default is true (safe / pre-existing behavior) for any path that bypasses
+//  the analysis (e.g., direct interpreter execution).
+// ============================================================================
+bool g_vu1NeedsFlags = true;
+
+// ============================================================================
 //  Native NEON codegen helpers
 // ============================================================================
 
@@ -70,6 +87,32 @@ static void emitFmacWriteback(int64_t dst_off, u32 xyzw)
 	armAsm->Add(x1, VU1_BASE_REG, dst_off);
 	armAsm->Mov(w2, xyzw);
 	armEmitCall(reinterpret_cast<const void*>(vu1_fmac_writeback));
+}
+
+// Store v5 to dst_off with xyzw mask, used by the flag-skipping fast path.
+// Identical merge logic to emitNoFlagWriteback below, but takes a raw byte
+// offset (so it can target ACC as well as VF[fd]) and skips the fd==0 check
+// only when dst_off matches VF[0]. Output clamping is the caller's job.
+static constexpr int64_t vfOffStatic0 = static_cast<int64_t>(offsetof(VURegs, VF));
+static void emitFmacStoreMasked(int64_t dst_off, u32 xyzw)
+{
+	// VF[0] is hardwired to {0,0,0,1}; the C helper drops the write but
+	// still updates flags — in the no-flag path there's nothing to do.
+	if (dst_off == vfOffStatic0)
+		return;
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Str(q5, MemOperand(VU1_BASE_REG, dst_off));
+		return;
+	}
+
+	armAsm->Ldr(q4, MemOperand(VU1_BASE_REG, dst_off));
+	if (xyzw & 8) armAsm->Mov(v4.V4S(), 0, v5.V4S(), 0); // x
+	if (xyzw & 4) armAsm->Mov(v4.V4S(), 1, v5.V4S(), 1); // y
+	if (xyzw & 2) armAsm->Mov(v4.V4S(), 2, v5.V4S(), 2); // z
+	if (xyzw & 1) armAsm->Mov(v4.V4S(), 3, v5.V4S(), 3); // w
+	armAsm->Str(q4, MemOperand(VU1_BASE_REG, dst_off));
 }
 
 // Writeback for ops that DO NOT update MAC/Status flags (MAX, MINI, ABS).
@@ -156,14 +199,22 @@ static void emitVuClampVec(const VRegister& vn)
 // op: 0=ADD, 1=SUB, 2=MUL
 static void emitBinaryFmac(int op, u32 fs, int64_t dst_off, u32 xyzw)
 {
+	const bool needsFlags  = g_vu1NeedsFlags;
+	const bool clampInputs = CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1);
+	// Output clamping is only required when we're skipping the C helper —
+	// VU_MAC_UPDATE clamps inf/NaN→±MAX inside the C path. With flags
+	// deferred, we replicate that behavior with FMINNM/FMAXNM in NEON.
+	const bool clampOutput = !needsFlags && CHECK_VU_OVERFLOW(1);
+
 	// Load VF[fs] → v0
 	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
 	// v1 must already be loaded with src2
 
 	// vuDouble input clamping (matches interpreter's vuDouble on every operand)
-	if (CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1))
-	{
+	if (clampInputs || clampOutput)
 		emitVuClampSetup();
+	if (clampInputs)
+	{
 		emitVuClampVec(v0.V4S());
 		emitVuClampVec(v1.V4S());
 	}
@@ -174,7 +225,17 @@ static void emitBinaryFmac(int op, u32 fs, int64_t dst_off, u32 xyzw)
 		case 1: armAsm->Fsub(v5.V4S(), v0.V4S(), v1.V4S()); break;
 		case 2: armAsm->Fmul(v5.V4S(), v0.V4S(), v1.V4S()); break;
 	}
-	emitFmacWriteback(dst_off, xyzw);
+
+	if (needsFlags)
+	{
+		emitFmacWriteback(dst_off, xyzw);
+	}
+	else
+	{
+		if (clampOutput)
+			emitVuClampVec(v5.V4S());
+		emitFmacStoreMasked(dst_off, xyzw);
+	}
 }
 
 // --- Ternary FMAC: dst = ACC ± VF[fs] * src2 ---
@@ -185,6 +246,10 @@ static void emitBinaryFmac(int op, u32 fs, int64_t dst_off, u32 xyzw)
 // in matrix transforms. We use separate FMUL + FADD/FSUB to match.
 static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 {
+	const bool needsFlags  = g_vu1NeedsFlags;
+	const bool clampInputs = CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1);
+	const bool clampOutput = !needsFlags && CHECK_VU_OVERFLOW(1);
+
 	// Load VF[fs] → v0
 	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
 	// v1 must already be loaded with src2
@@ -192,9 +257,10 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 	armAsm->Ldr(q5, MemOperand(VU1_BASE_REG, accOff()));
 
 	// vuDouble input clamping (all 3 operands, matching interpreter)
-	if (CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1))
-	{
+	if (clampInputs || clampOutput)
 		emitVuClampSetup();
+	if (clampInputs)
+	{
 		emitVuClampVec(v0.V4S());
 		emitVuClampVec(v1.V4S());
 		emitVuClampVec(v5.V4S());
@@ -207,7 +273,17 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 		armAsm->Fsub(v5.V4S(), v5.V4S(), v4.V4S());
 	else
 		armAsm->Fadd(v5.V4S(), v5.V4S(), v4.V4S());
-	emitFmacWriteback(dst_off, xyzw);
+
+	if (needsFlags)
+	{
+		emitFmacWriteback(dst_off, xyzw);
+	}
+	else
+	{
+		if (clampOutput)
+			emitVuClampVec(v5.V4S());
+		emitFmacStoreMasked(dst_off, xyzw);
+	}
 }
 
 // --- MAX/MINI: bit-exact emulation of interpreter fp_max / fp_min ---

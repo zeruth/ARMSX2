@@ -43,6 +43,11 @@ using VU1RecFn = void (*)();
 extern VU1RecFn recVU1_UpperTable[64];
 extern VU1RecFn recVU1_LowerTable[128];
 
+// Flag-deferral state owned by iVU1Upper_arm64.cpp. Set per-pair before
+// dispatching the upper emitter — when false, FMAC arithmetic emitters
+// skip the BL vu1_fmac_writeback and inline a NEON clamp + store instead.
+extern bool g_vu1NeedsFlags;
+
 // ============================================================================
 //  Block cache
 // ============================================================================
@@ -534,6 +539,50 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		}
 	}
 
+	// --- Flag-deferral analysis ---
+	// For each FMAC pair, determine whether its MAC/STATUS flag updates are
+	// observable. Two reasons to keep them:
+	//   (a) Some later same-block pair reads MAC/STATUS/CLIP via FMxxx/FSxxx/
+	//       FCxxx (detected via lregs.VIread bits).
+	//   (b) The pair is one of the LAST 4 FMAC ops in the block — the FMAC
+	//       pipe has 4 slots and ~4-cycle latency, so these writes have not
+	//       reached VI[FLAG] before the block ends; the next block's
+	//       _vuTestPipes will flush them.
+	//
+	// When neither holds, the FMAC arithmetic emitters skip BL vu1_fmac_writeback
+	// entirely and emit a NEON clamp + store instead — typically 5-7 instructions
+	// instead of a function call doing per-lane flag math.
+	bool pair_needs_flags[VU1_MAX_BLOCK_PAIRS];
+	{
+		constexpr u32 FLAG_READ_MASK = (1u << REG_MAC_FLAG)
+		                              | (1u << REG_STATUS_FLAG)
+		                              | (1u << REG_CLIP_FLAG);
+		bool sawFlagReader = false; // any pair > current reads flags
+		int  fmacFromEnd   = 0;     // count of FMAC pairs at indices > current
+		for (int i = static_cast<int>(numPairs) - 1; i >= 0; i--)
+		{
+			const _VURegsNum& uregs = uregs_data[i];
+			const _VURegsNum& lregs = lregs_data[i];
+			const bool isFmacPair = (uregs.pipe == VUPIPE_FMAC || lregs.pipe == VUPIPE_FMAC);
+
+			bool needsFlags = false;
+			if (isFmacPair)
+			{
+				if (fmacFromEnd < 4 || sawFlagReader)
+					needsFlags = true;
+				fmacFromEnd++;
+			}
+			pair_needs_flags[i] = needsFlags;
+
+			// Update sawFlagReader for the NEXT (earlier) iteration. The
+			// current pair's own flag read does not pull its own flag write
+			// — pipe latency means a same-pair FMxxx reads VI[FLAG] from
+			// 4+ cycles ago, not the upper FMAC's just-now-written value.
+			if ((uregs.VIread | lregs.VIread) & FLAG_READ_MASK)
+				sawFlagReader = true;
+		}
+	}
+
 	// Code section starts after data, 4-byte aligned.
 	u8* code_start = data_base + data_size;
 	code_start = reinterpret_cast<u8*>((reinterpret_cast<uintptr_t>(code_start) + 3) & ~3ULL);
@@ -658,6 +707,7 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		armAsm->Mov(w4, upper);
 		armAsm->Str(w4, MemOperand(VU1_BASE_REG, code_off));
 		VU1.code = upper; // compile-time context for the rec emitter
+		g_vu1NeedsFlags = pair_needs_flags[i]; // flag-deferral hint for FMAC emitters
 		recVU1_UpperTable[upper & 0x3f](); // emits BL to specific interpreter fn
 
 		// 8. Lower instruction handling.
