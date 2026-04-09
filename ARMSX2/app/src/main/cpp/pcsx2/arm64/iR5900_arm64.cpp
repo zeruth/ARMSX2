@@ -571,7 +571,16 @@ void armCallInterpreter(void (*func)())
     armFlushCode();
     armFlushConstRegs();
 
+    // Phase B: the JIT-current cycle lives in RCYCLE (x20); cpuRegs.cycle in
+    // memory is stale. Many interpreter stubs (COP2/VU0 CFC2/CTC2/QMFC2, MMI,
+    // etc.) transitively call CPU_INT / cpuSetNextEventDelta, which read
+    // cpuRegs.cycle to schedule events. Without flushing first, events are
+    // scheduled relative to an old "now" and nextEventCycle goes wrong;
+    // without reloading after, the RCYCLE invariant breaks and the next
+    // iBranchTest miscomputes budget — either way, a hang.
+    armEmitFlushCycleBeforeCall();
     armEmitCall((const void*)func);
+    armEmitReloadCycleAfterCall();
 
     // RMEMBASE (x21) is callee-saved — no reload needed.
     g_cpuHasConstReg = 1;
@@ -597,10 +606,9 @@ void armBranchCallInterpreter(void (*func)())
 	// nextEventCycle = cycle  (force the post-call iBranchTest into DispatcherEvent)
 	armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
 
+	// armCallInterpreter now handles flush-before / reload-after internally,
+	// so we don't need a separate armReloadCycle() here.
 	armCallInterpreter(func);
-
-	// Reload the delta — interp may have changed both cycle and nextEventCycle.
-	armReloadCycle();
 	g_branch = 2;
 }
 
