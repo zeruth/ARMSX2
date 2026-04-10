@@ -11,7 +11,7 @@ find_path(
 
 find_library(
     SHADERC_LIBRARY
-    NAMES shaderc_shared.1 shaderc_shared shaderc
+    NAMES shaderc_shared.1 shaderc_shared
     PATHS ${ADDITIONAL_LIBRARY_PATHS} ${SHADERC_PATH_LIB}
 )
 
