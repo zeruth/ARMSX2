@@ -97,6 +97,7 @@ if(NOT ANDROID AND UNIX AND NOT APPLE)
 		imgui
 		libzip::zip
 		SDL3::SDL3
+		simpleini
 	)
 	target_include_directories(armsx2 PRIVATE
 		"${CMAKE_SOURCE_DIR}"
