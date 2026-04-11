@@ -27,7 +27,7 @@
 #include "common/Perf.h"
 #include "DebugTools/Breakpoints.h"
 
-#include "x86/iCore.h" // EEINST, g_pCurInstInfo
+#include "iRecAnalysis.h" // EEINST, g_pCurInstInfo
 
 extern void armEndStackFrame(bool save_fpr);
 

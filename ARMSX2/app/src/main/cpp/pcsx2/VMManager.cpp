@@ -61,7 +61,6 @@
 #include "common/StringUtil.h"
 #include "common/Threading.h"
 #include "common/Timer.h"
-#include "common/emitter/x86emitter.h"
 
 #include "IconsFontAwesome.h"
 #include "IconsPromptFont.h"
