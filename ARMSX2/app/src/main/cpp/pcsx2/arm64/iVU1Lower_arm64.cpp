@@ -8,6 +8,9 @@
 #include "Common.h"
 #include "VUops.h"
 #include "VU.h"
+#include "Vif.h"
+#include "Vif_Dma.h"
+#include "Gif_Unit.h"
 #include "arm64/arm64Emitter.h"
 #include "arm64/AsmHelpers.h"
 #include "MTVU.h"
@@ -771,20 +774,92 @@ static void vu1_XTOP(VURegs* VU)
 		VU->VI[W_It(VU)].US[0] = (vu_u16)VU->GetVifRegs().top;
 }
 
+// XGKICK capture scratch — arm64 analogue of microVU's mVU.VIxgkick. Holds
+// the pending XGKICK's VU1.Mem offset between the capture at pair k and the
+// deferred fire at (end of) pair k+1. Critically, this is NOT VU1.xgkickenable
+// / VU1.xgkickaddr — touching VU1.xgkickenable would trip _vuTestPipes
+// (VUops.cpp:203), which calls _vuXGKICKTransfer whenever xgkickenable is set
+// and xgkickcyclecount >= 2. Under REC_VU1=true that loop walks
+// GetGSPacketSize without the Gif_Unit.h:606 early-exit branch setting the
+// EOP top bit, so xgkickendpacket stays 0 and the loop iterates past the
+// packet, trips the 0x4000 guard, and cancels valid kicks. By stashing the
+// addr in a private static and firing via the direct gifUnit path, the arm64
+// rec avoids _vuTestPipes's xgkick branch entirely (mirroring microVU's
+// non-hack path which only touches mVU.VIxgkick, never VU1.xgkickenable).
+//
+// Safe as a file-local static: every compiled VU1 block drains any pending
+// kick before returning (pair-loop step 15 or the CompileBlock block-end
+// drain), so this never carries state across block boundaries.
+static u32 s_vu1_pending_xgkick_addr;
+
+// Forward decl — defined just below. Fires a pending XGKICK via the direct
+// gifUnit path. Only called when the compile-time pending_xgkick_fire tracker
+// in CompileBlock says a kick is pending, so no runtime pending flag needed.
+void vu1_XGKICK_fire_deferred(VURegs* VU);
+
 static void vu1_XGKICK(VURegs* VU)
 {
-	if (VU->xgkickenable)
-		_vuXGKICKTransfer(0, true);
-	u32 addr = (VU->VI[W_Is(VU)].US[0] & 0x3ff) * 16;
-	u32 diff = 0x4000 - addr;
-	VU->xgkickenable = true;
-	VU->xgkickaddr = addr;
-	VU->xgkickdiff = diff;
-	VU->xgkicksizeremaining = 0;
-	VU->xgkickendpacket = false;
-	VU->xgkicklastcycle = VU->cycle;
-	VU->xgkickcyclecount = 1;
-	VU0.VI[REG_VPU_STAT].UL |= (1 << 12);
+	// Capture only. No VU1.xgkickenable / VU1.xgkickaddr / VPU_STAT writes —
+	// keeping VU1 state untouched is what prevents _vuTestPipes (called at
+	// step 6 of every following pair in CompileBlock) from observing "kick
+	// pending" and walking into the broken _vuXGKICKTransfer loop. Back-to-
+	// back XGKICKs are sequenced at compile time in CompileBlock, so no
+	// flush-prior path here.
+	s_vu1_pending_xgkick_addr = (VU->VI[W_Is(VU)].US[0] & 0x3ff) * 16;
+}
+
+// Deferred XGKICK transfer. Emitted by CompileBlock one pair after an XGKICK
+// (or immediately before a back-to-back XGKICK capture) so any VU store on
+// the intervening pair has committed before the GIF walks VU1.Mem. Arm64
+// analogue of microVU's mVU_XGKICK_ / mVU_XGKICK_DELAY path.
+//
+// IMPORTANT: we deliberately bypass _vuXGKICKTransfer here. That loop is
+// written for the interpreter/REC_VU1=false configuration and relies on
+// GetGSPacketSize returning with the EOP top-bit set (Gif_Unit.h:606 early-
+// exit branch) to know when to stop. With REC_VU1=true the early-exit is
+// disabled and line 612 returns without the top bit, so _vuXGKICKTransfer
+// never sees xgkickendpacket, re-iterates past the packet, walks stale
+// memory, hits the 0x4000 guard and cancels the kick. microVU sidesteps this
+// by calling gifUnit.GetGSPacketSize + TransferGSPacketData directly in
+// mVU_XGKICK_ (microVU_Lower.inl:1698). This function is the arm64 analogue.
+//
+// VU arg is unused (kept for ABI compat with armEmitCall, which loads x0 =
+// VU1_BASE_REG at every call site).
+void vu1_XGKICK_fire_deferred(VURegs* VU)
+{
+	(void)VU;
+
+	const u32 addr = s_vu1_pending_xgkick_addr & 0x3FF0u;
+	const u32 diff = 0x4000u - addr;
+	u32 size = gifUnit.GetGSPacketSize(GIF_PATH_1, VU1.Mem, addr, ~0u, true);
+	size &= 0xFFFFu; // strip the EOP top bit the early-exit path sets when REC_VU1=false
+
+	if (size == 0)
+	{
+		// 0x4000 guard tripped — silently drop the kick, matching microVU's
+		// mVU_XGKICK_ which would TransferGSPacketData(..., 0, ...). BIOS
+		// does this once at boot (see Gif_Unit.h:602 comment).
+		return;
+	}
+
+	if (size > diff)
+	{
+		// Wrap: tail of VU memory + wraparound prefix. CopyGSPacketData for
+		// the tail so PATH3 arbitration stays sane (mVU_XGKICK_ does the same).
+		gifUnit.gifPath[GIF_PATH_1].CopyGSPacketData(&VU1.Mem[addr], diff, true);
+		gifUnit.TransferGSPacketData(GIF_TRANS_XGKICK, &VU1.Mem[0], size - diff, true);
+	}
+	else
+	{
+		gifUnit.TransferGSPacketData(GIF_TRANS_XGKICK, &VU1.Mem[addr], size, true);
+	}
+
+	// Release VIF if it was waiting on the GIF, same as _vuXGKICKTransfer.
+	if (vif1Regs.stat.VGW)
+	{
+		vif1Regs.stat.VGW = false;
+		CPU_INT(DMAC_VIF1, 8);
+	}
 }
 
 // ============================================================================

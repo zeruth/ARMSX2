@@ -1487,9 +1487,16 @@ namespace EmuFolders
 
 // ------------ CPU / Recompiler Options ---------------
 
-#ifdef _M_X86 // TODO: Remove me once EE/VU/IOP recs are added.
+#if defined(_M_X86)
 #define REC_VU1 (EmuConfig.Cpu.Recompiler.EnableVU1)
 #define THREAD_VU1 (REC_VU1 && EmuConfig.Speedhacks.vuThread)
+#elif defined(__aarch64__) || defined(_M_ARM64)
+// arm64 has a native VU1 recompiler (iVU1micro_arm64.cpp) plus the
+// XGKICK cycle-delay port needed for GetGSPacketSize to walk a stable
+// VU1.Mem. MTVU (THREAD_VU1) is still not wired up on arm64 — the cross-
+// thread VU state plumbing hasn't been ported — so force-disable it.
+#define REC_VU1 (EmuConfig.Cpu.Recompiler.EnableVU1)
+#define THREAD_VU1 false
 #else
 #define THREAD_VU1 false
 #define REC_VU1 false
