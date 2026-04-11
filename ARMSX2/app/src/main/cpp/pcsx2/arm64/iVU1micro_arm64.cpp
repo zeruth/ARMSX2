@@ -469,19 +469,20 @@ static const auto VU1_BASE_REG = x23;
 //    x4-x7, x0-x3 are scratch (clobbered freely)
 // ============================================================================
 
-// Emit BL vu1_TestFMACStallReg(VU, reg, xyzw) only when reg != 0.
-// This is the inner-loop FMAC hazard test. Both VFread0 and VFread1 may
-// require a call.
-static void emitFMACStallChecks(const _VURegsNum& regs)
+// Emit BL vu1_TestFMACStallReg(VU, reg, xyzw) only when reg != 0 AND the
+// compile-time pipeline tracker has not already proven no FMAC slot aliases
+// (skip0/skip1 flags come from Stage A of the mVUregs port — see the
+// "Compile-time pipeline state tracking" pre-walk in CompileBlock).
+static void emitFMACStallChecks(const _VURegsNum& regs, bool skip0, bool skip1)
 {
-	if (regs.VFread0 != 0)
+	if (!skip0 && regs.VFread0 != 0)
 	{
 		armAsm->Mov(x0, VU1_BASE_REG);
 		armAsm->Mov(w1, regs.VFread0);
 		armAsm->Mov(w2, regs.VFr0xyzw);
 		armEmitCall(reinterpret_cast<const void*>(vu1_TestFMACStallReg));
 	}
-	if (regs.VFread1 != 0)
+	if (!skip1 && regs.VFread1 != 0)
 	{
 		armAsm->Mov(x0, VU1_BASE_REG);
 		armAsm->Mov(w1, regs.VFread1);
@@ -492,36 +493,51 @@ static void emitFMACStallChecks(const _VURegsNum& regs)
 
 // Inline replacement for BL _vuTestUpperStalls.
 // Upper instructions only have an FMAC pipe; everything else is a no-op.
-static void emitTestUpperStalls(const _VURegsNum& uregs)
+static void emitTestUpperStalls(const _VURegsNum& uregs, bool skipFMACStall0, bool skipFMACStall1)
 {
 	if (uregs.pipe == VUPIPE_FMAC)
-		emitFMACStallChecks(uregs);
+		emitFMACStallChecks(uregs, skipFMACStall0, skipFMACStall1);
 }
 
 // Inline replacement for BL _vuTestLowerStalls.
 // Lower instructions can be FMAC, FDIV, EFU, or BRANCH (ALU). Other pipes
-// (IALU, NONE) are no-ops.
-static void emitTestLowerStalls(const _VURegsNum& lregs)
+// (IALU, NONE) are no-ops. Stage B threads through FDIV/EFU/ALU wait skip
+// flags in addition to Stage A's FMAC stall skips.
+//
+// EFU wait note: vu1_TestEFUPipeWait has a mandatory `efu.Cycle -= 1` side
+// effect when enable!=0, so skipping is ONLY sound when the pre-walk proved
+// the EFU pipe is entirely empty at this pair (no in-block add AND carry-in
+// worst-case retired, gate = 54 cycles). Same reasoning applies to FDIV wait
+// (gate 12) and ALU stall check (gate 3).
+static void emitTestLowerStalls(const _VURegsNum& lregs,
+	bool skipFMACStall0, bool skipFMACStall1,
+	bool skipFDIVWait, bool skipEFUWait, bool skipALUStall)
 {
 	switch (lregs.pipe)
 	{
 		case VUPIPE_FMAC:
-			emitFMACStallChecks(lregs);
+			emitFMACStallChecks(lregs, skipFMACStall0, skipFMACStall1);
 			break;
 		case VUPIPE_FDIV:
-			emitFMACStallChecks(lregs);
-			armAsm->Mov(x0, VU1_BASE_REG);
-			armEmitCall(reinterpret_cast<const void*>(vu1_TestFDIVPipeWait));
+			emitFMACStallChecks(lregs, skipFMACStall0, skipFMACStall1);
+			if (!skipFDIVWait)
+			{
+				armAsm->Mov(x0, VU1_BASE_REG);
+				armEmitCall(reinterpret_cast<const void*>(vu1_TestFDIVPipeWait));
+			}
 			break;
 		case VUPIPE_EFU:
-			emitFMACStallChecks(lregs);
-			armAsm->Mov(x0, VU1_BASE_REG);
-			armEmitCall(reinterpret_cast<const void*>(vu1_TestEFUPipeWait));
+			emitFMACStallChecks(lregs, skipFMACStall0, skipFMACStall1);
+			if (!skipEFUWait)
+			{
+				armAsm->Mov(x0, VU1_BASE_REG);
+				armEmitCall(reinterpret_cast<const void*>(vu1_TestEFUPipeWait));
+			}
 			break;
 		case VUPIPE_BRANCH:
 			// Unconditional B/BAL have VIread == 0; the ALU stall test
 			// would be a no-op, so skip the BL entirely.
-			if (lregs.VIread != 0)
+			if (!skipALUStall && lregs.VIread != 0)
 			{
 				armAsm->Mov(x0, VU1_BASE_REG);
 				armAsm->Mov(w1, lregs.VIread);
@@ -722,6 +738,275 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		}
 	}
 
+	// --- Compile-time pipeline state tracking (Stages A+B) ---
+	// Pre-walk the block to decide which stall-check / TestPipes BLs can be
+	// proven unnecessary at compile time. Tracks the four VU pipes:
+	//   FMAC (4-slot ring, Cycle=4 fixed)
+	//   IALU (4-slot ring, per-slot Cycle)
+	//   FDIV (single slot, per-slot Cycle, max 13)
+	//   EFU  (single slot, per-slot Cycle, max 54)
+	//
+	// Soundness: ct_cycle advances by exactly 1 per pair (no stall-induced
+	// bumps). Runtime cycle can only LEAD ours (stalls advance runtime but
+	// not our model), so for any slot, (runtime_cycle - runtime_sCycle) >=
+	// (ct_cycle - ct_sCycle). "Slot absent in our model" implies "slot
+	// absent at runtime" — elision is one-way safe.
+	//
+	// Carry-in: runtime's rings may hold entries at block entry that our
+	// model can't see. Each pipe has a "carry-in gate" — ct_cycle threshold
+	// past which all possible carry-in is guaranteed retired:
+	//   FMAC: > 3  (max Cycle=4, latest delta-sCycle=-1 matures at ct_cycle=3)
+	//   IALU: > 3  (max Cycle=4)
+	//   FDIV: > 12 (max Cycle=13)
+	//   EFU : > 54 (max Cycle=54 for EATAN family)
+	// Elision only fires once the relevant gate is cleared.
+	struct CTFmacSlot
+	{
+		u8 regupper, xyzwupper;
+		u8 reglower, xyzwlower;
+		int sCycle;
+		bool valid;
+	};
+	CTFmacSlot ct_fmac[4] = {};
+	int ct_fmac_wpos = 0, ct_fmac_rpos = 0, ct_fmac_count = 0;
+
+	struct CTIaluSlot
+	{
+		u32 reg;    // VIwrite bits
+		int sCycle;
+		int cycles;
+		bool valid;
+	};
+	CTIaluSlot ct_ialu[4] = {};
+	int ct_ialu_wpos = 0, ct_ialu_rpos = 0, ct_ialu_count = 0;
+
+	bool ct_fdiv_pending = false;
+	int  ct_fdiv_sCycle  = 0;
+	int  ct_fdiv_cycles  = 0;
+
+	bool ct_efu_pending = false;
+	int  ct_efu_sCycle  = 0;
+	int  ct_efu_cycles  = 0;
+
+	constexpr int CARRY_IN_GATE_FMAC = 3;
+	constexpr int CARRY_IN_GATE_IALU = 3;
+	constexpr int CARRY_IN_GATE_FDIV = 12;
+	constexpr int CARRY_IN_GATE_EFU  = 54;
+
+	struct PerPairSkip
+	{
+		bool skipUpperFMACStall0;
+		bool skipUpperFMACStall1;
+		bool skipLowerFMACStall0;
+		bool skipLowerFMACStall1;
+		bool skipLowerFDIVWait;
+		bool skipLowerEFUWait;
+		bool skipLowerALUStall;
+		bool skipTestPipes;
+	};
+	PerPairSkip skip_info[VU1_MAX_BLOCK_PAIRS] = {};
+
+	{
+		int ct_cycle = 0;
+		u32 pc_walk = startPC;
+		for (u32 i = 0; i < numPairs; i++)
+		{
+			const u32 upper = *reinterpret_cast<const u32*>(VU1.Micro + pc_walk + 4);
+			const bool ibit = (upper >> 31) & 1;
+			const _VURegsNum& uregs = uregs_data[i];
+			const _VURegsNum& lregs = lregs_data[i];
+
+			// step 1: cycle++
+			ct_cycle++;
+
+			const bool fmac_carry_safe = (ct_cycle > CARRY_IN_GATE_FMAC);
+			const bool ialu_carry_safe = (ct_cycle > CARRY_IN_GATE_IALU);
+			const bool fdiv_carry_safe = (ct_cycle > CARRY_IN_GATE_FDIV);
+			const bool efu_carry_safe  = (ct_cycle > CARRY_IN_GATE_EFU);
+
+			auto aliasFmac = [&](u8 reg, u8 xyzw) -> bool {
+				if (reg == 0)
+					return false;
+				int idx = ct_fmac_rpos;
+				for (int n = 0; n < ct_fmac_count; n++)
+				{
+					const CTFmacSlot& slot = ct_fmac[idx];
+					if (slot.valid)
+					{
+						if (slot.regupper == reg && (slot.xyzwupper & xyzw))
+							return true;
+						if (slot.reglower == reg && (slot.xyzwlower & xyzw))
+							return true;
+					}
+					idx = (idx + 1) & 3;
+				}
+				return false;
+			};
+
+			auto aliasIalu = [&](u32 VIread) -> bool {
+				if (VIread == 0)
+					return false;
+				int idx = ct_ialu_rpos;
+				for (int n = 0; n < ct_ialu_count; n++)
+				{
+					const CTIaluSlot& slot = ct_ialu[idx];
+					if (slot.valid && (slot.reg & VIread))
+						return true;
+					idx = (idx + 1) & 3;
+				}
+				return false;
+			};
+
+			// step 5 upper stalls — FMAC only
+			if (fmac_carry_safe && uregs.pipe == VUPIPE_FMAC)
+			{
+				skip_info[i].skipUpperFMACStall0 = !aliasFmac(uregs.VFread0, uregs.VFr0xyzw);
+				skip_info[i].skipUpperFMACStall1 = !aliasFmac(uregs.VFread1, uregs.VFr1xyzw);
+			}
+
+			// step 5b lower stalls — FMAC/FDIV/EFU do FMAC checks first, plus
+			// their respective wait helpers. BRANCH does an ALU stall check.
+			if (!ibit)
+			{
+				const bool lowerDoesFMACCheck =
+					(lregs.pipe == VUPIPE_FMAC) ||
+					(lregs.pipe == VUPIPE_FDIV) ||
+					(lregs.pipe == VUPIPE_EFU);
+				if (lowerDoesFMACCheck && fmac_carry_safe)
+				{
+					skip_info[i].skipLowerFMACStall0 = !aliasFmac(lregs.VFread0, lregs.VFr0xyzw);
+					skip_info[i].skipLowerFMACStall1 = !aliasFmac(lregs.VFread1, lregs.VFr1xyzw);
+				}
+
+				switch (lregs.pipe)
+				{
+					case VUPIPE_FDIV:
+						// Elide wait BL when FDIV definitely not pending:
+						// no in-block add AND carry-in gate cleared.
+						skip_info[i].skipLowerFDIVWait = !ct_fdiv_pending && fdiv_carry_safe;
+						break;
+					case VUPIPE_EFU:
+						// vu1_TestEFUPipeWait has a mandatory `efu.Cycle -= 1`
+						// side effect when enable!=0, so elision is only safe
+						// when we know enable=0 for certain (no in-block add
+						// AND carry-in retired — gate 54).
+						skip_info[i].skipLowerEFUWait = !ct_efu_pending && efu_carry_safe;
+						break;
+					case VUPIPE_BRANCH:
+						if (lregs.VIread != 0 && ialu_carry_safe)
+							skip_info[i].skipLowerALUStall = !aliasIalu(lregs.VIread);
+						break;
+					default:
+						break;
+				}
+			}
+
+			// step 6 TestPipes: decide elision BEFORE retiring, then retire.
+			// The BL is a no-op when nothing matures at this pair AND all
+			// pipes' carry-in gates have cleared.
+			{
+				const bool fmacMature = (ct_fmac_count > 0)
+					&& ct_fmac[ct_fmac_rpos].valid
+					&& (ct_cycle - ct_fmac[ct_fmac_rpos].sCycle) >= 4;
+				const bool fdivMature = ct_fdiv_pending
+					&& (ct_cycle - ct_fdiv_sCycle) >= ct_fdiv_cycles;
+				const bool efuMature  = ct_efu_pending
+					&& (ct_cycle - ct_efu_sCycle) >= ct_efu_cycles;
+				const bool ialuMature = (ct_ialu_count > 0)
+					&& ct_ialu[ct_ialu_rpos].valid
+					&& (ct_cycle - ct_ialu[ct_ialu_rpos].sCycle) >= ct_ialu[ct_ialu_rpos].cycles;
+
+				skip_info[i].skipTestPipes =
+					!fmacMature && !fdivMature && !efuMature && !ialuMature
+					&& fmac_carry_safe && fdiv_carry_safe
+					&& efu_carry_safe  && ialu_carry_safe;
+			}
+
+			// Retire mature slots in the CT model.
+			while (ct_fmac_count > 0)
+			{
+				CTFmacSlot& head = ct_fmac[ct_fmac_rpos];
+				if (!head.valid || (ct_cycle - head.sCycle) < 4)
+					break;
+				head.valid = false;
+				ct_fmac_rpos = (ct_fmac_rpos + 1) & 3;
+				ct_fmac_count--;
+			}
+			while (ct_ialu_count > 0)
+			{
+				CTIaluSlot& head = ct_ialu[ct_ialu_rpos];
+				if (!head.valid || (ct_cycle - head.sCycle) < head.cycles)
+					break;
+				head.valid = false;
+				ct_ialu_rpos = (ct_ialu_rpos + 1) & 3;
+				ct_ialu_count--;
+			}
+			if (ct_fdiv_pending && (ct_cycle - ct_fdiv_sCycle) >= ct_fdiv_cycles)
+				ct_fdiv_pending = false;
+			if (ct_efu_pending && (ct_cycle - ct_efu_sCycle) >= ct_efu_cycles)
+				ct_efu_pending = false;
+
+			// step 11 adds
+			{
+				const bool uFMAC = (uregs.pipe == VUPIPE_FMAC);
+				const bool lFMAC = !ibit && (lregs.pipe == VUPIPE_FMAC);
+				if (uFMAC || lFMAC)
+				{
+					CTFmacSlot& slot = ct_fmac[ct_fmac_wpos];
+					slot.regupper  = uFMAC ? uregs.VFwrite : 0;
+					slot.xyzwupper = uFMAC ? uregs.VFwxyzw : 0;
+					slot.reglower  = lFMAC ? lregs.VFwrite : 0;
+					slot.xyzwlower = lFMAC ? lregs.VFwxyzw : 0;
+					slot.sCycle    = ct_cycle;
+					slot.valid     = true;
+					ct_fmac_wpos = (ct_fmac_wpos + 1) & 3;
+					if (ct_fmac_count < 4)
+						ct_fmac_count++;
+				}
+			}
+
+			if (!ibit)
+			{
+				switch (lregs.pipe)
+				{
+					case VUPIPE_FDIV:
+						if (lregs.VIwrite & (1u << REG_Q))
+						{
+							ct_fdiv_pending = true;
+							ct_fdiv_sCycle  = ct_cycle;
+							ct_fdiv_cycles  = lregs.cycles;
+						}
+						break;
+					case VUPIPE_EFU:
+						if (lregs.VIwrite & (1u << REG_P))
+						{
+							ct_efu_pending = true;
+							ct_efu_sCycle  = ct_cycle;
+							ct_efu_cycles  = lregs.cycles;
+						}
+						break;
+					case VUPIPE_IALU:
+						if (lregs.cycles != 0)
+						{
+							CTIaluSlot& slot = ct_ialu[ct_ialu_wpos];
+							slot.reg    = lregs.VIwrite;
+							slot.sCycle = ct_cycle;
+							slot.cycles = lregs.cycles;
+							slot.valid  = true;
+							ct_ialu_wpos = (ct_ialu_wpos + 1) & 3;
+							if (ct_ialu_count < 4)
+								ct_ialu_count++;
+						}
+						break;
+					default:
+						break;
+				}
+			}
+
+			pc_walk = (pc_walk + 8) & (VU1_PROGSIZE - 1);
+		}
+	}
+
 	// Code section starts after data, 4-byte aligned.
 	u8* code_start = data_base + data_size;
 	code_start = reinterpret_cast<u8*>((reinterpret_cast<uintptr_t>(code_start) + 3) & ~3ULL);
@@ -838,20 +1123,35 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		}
 
 		// 5. Test upper stalls — compile-time-specialized inline. Most upper
-		//    instructions are non-FMAC and emit zero work here.
-		emitTestUpperStalls(uregs);
+		//    instructions are non-FMAC and emit zero work here. Stage A uses
+		//    skip_info[i] to elide FMAC stall-check BLs when the compile-time
+		//    ring buffer proves no alias exists.
+		emitTestUpperStalls(uregs,
+			skip_info[i].skipUpperFMACStall0,
+			skip_info[i].skipUpperFMACStall1);
 
 		// 5b. Test lower stalls BEFORE TestPipes (non-I-bit only).
 		//     TestLowerStalls may advance VU->cycle (FDIV/EFU/ALU stalls);
 		//     TestPipes needs to see the updated cycle to flush FMAC correctly.
+		//     Stage B adds FDIV/EFU/ALU wait skip flags.
 		if (!ibit)
-			emitTestLowerStalls(lregs);
+			emitTestLowerStalls(lregs,
+				skip_info[i].skipLowerFMACStall0,
+				skip_info[i].skipLowerFMACStall1,
+				skip_info[i].skipLowerFDIVWait,
+				skip_info[i].skipLowerEFUWait,
+				skip_info[i].skipLowerALUStall);
 
-		// 6. Test pipes (always, after lower stalls for non-I-bit). Uses the
-		//    VU1-specialized helper that skips the XGKICK block and the
-		//    do-while retry loop — see vu1_TestPipes_VU1 definition above.
-		armAsm->Mov(x0, VU1_BASE_REG);
-		armEmitCall(reinterpret_cast<const void*>(vu1_TestPipes_VU1));
+		// 6. Test pipes (after lower stalls for non-I-bit). Uses the VU1-
+		//    specialized helper that skips the XGKICK block and the do-while
+		//    retry loop — see vu1_TestPipes_VU1 definition above. Stage B
+		//    elides the BL entirely when the pre-walk proved nothing matures
+		//    at this pair AND all pipes' carry-in gates have cleared.
+		if (!skip_info[i].skipTestPipes)
+		{
+			armAsm->Mov(x0, VU1_BASE_REG);
+			armEmitCall(reinterpret_cast<const void*>(vu1_TestPipes_VU1));
+		}
 
 		// 6b. Decrement VIBackupCycles (needed for correct VI backup reads
 		//     in branch instructions). x22 holds cycle value before this pair.
