@@ -63,6 +63,7 @@ extern VU1RecFn recVU1_LowerTable[128];
 // dispatching the upper emitter — when false, FMAC arithmetic emitters
 // skip the BL vu1_fmac_writeback and inline a NEON clamp + store instead.
 extern bool g_vu1NeedsFlags;
+extern u32 g_vu1CurrentPC;
 
 // ============================================================================
 //  Block cache
@@ -822,6 +823,7 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 			armAsm->Mov(w4, lower);
 			armAsm->Str(w4, MemOperand(VU1_BASE_REG, code_off));
 			VU1.code = lower; // compile-time context
+			g_vu1CurrentPC = pc; // compile-time PC for native branches
 			recVU1_LowerTable[lower >> 25](); // emits BL to specific interpreter fn
 		}
 

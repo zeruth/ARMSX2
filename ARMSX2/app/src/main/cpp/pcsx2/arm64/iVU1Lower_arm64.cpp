@@ -28,6 +28,13 @@ extern void _vuXGKICKTransfer(s32 cycles, bool flush);
 // At runtime, x23 always holds &VU1 throughout a compiled block.
 static const auto VU1_BASE_REG = x23;
 
+// Compile-time current pair PC. Set by the per-pair dispatch loop in
+// iVU1micro_arm64.cpp before each lower-op emit. Used by native branch
+// emitters to resolve PC-relative targets at compile time (since step 2
+// of the dispatch loop has already stored (pair_pc+8) & VU1_PROGMASK into
+// VI[REG_TPC], runtime TPC is compile-time predictable here).
+u32 g_vu1CurrentPC = 0;
+
 // Compute byte offset of VI[reg] within VURegs.
 static constexpr int64_t viOff(u32 reg)
 {
@@ -138,29 +145,6 @@ static float vu1Double(vu_u32 f)
 			break;
 	}
 	return *(float*)&f;
-}
-
-// Branch address calculation — mirrors _branchAddr() in VUops.cpp
-static s32 vu1BranchAddr(VURegs* VU)
-{
-	s32 bpc = VU->VI[REG_TPC].SL + (W_Imm11(VU) * 8);
-	bpc &= 0x3fff;
-	return bpc;
-}
-
-// Set branch state — mirrors _setBranch() in VUops.cpp
-static void vu1SetBranch(VURegs* VU, u32 bpc)
-{
-	if (VU->branch == 1)
-	{
-		VU->delaybranchpc = bpc;
-		VU->takedelaybranch = true;
-	}
-	else
-	{
-		VU->branch = 2;
-		VU->branchpc = bpc;
-	}
 }
 
 // LFSR advance — mirrors AdvanceLFSR() in VUops.cpp
@@ -392,133 +376,6 @@ static void vu1_ISWR(VURegs* VU)
 	if (W_Y(VU)) { ptr[2] = VU->VI[W_It(VU)].US[0]; ptr[3] = 0; }
 	if (W_Z(VU)) { ptr[4] = VU->VI[W_It(VU)].US[0]; ptr[5] = 0; }
 	if (W_W(VU)) { ptr[6] = VU->VI[W_It(VU)].US[0]; ptr[7] = 0; }
-}
-
-// --- Branch wrappers ---
-static void vu1_B(VURegs* VU)
-{
-	s32 bpc = vu1BranchAddr(VU);
-	vu1SetBranch(VU, bpc);
-}
-
-static void vu1_BAL(VURegs* VU)
-{
-	s32 bpc = vu1BranchAddr(VU);
-	if (W_It(VU))
-	{
-		if (VU->branch == 1)
-			VU->VI[W_It(VU)].US[0] = (VU->branchpc + 8) / 8;
-		else
-			VU->VI[W_It(VU)].US[0] = (VU->VI[REG_TPC].UL + 8) / 8;
-	}
-	vu1SetBranch(VU, bpc);
-}
-
-static void vu1_JR(VURegs* VU)
-{
-	u32 bpc = VU->VI[W_Is(VU)].US[0] * 8;
-	vu1SetBranch(VU, bpc);
-}
-
-static void vu1_JALR(VURegs* VU)
-{
-	u32 bpc = VU->VI[W_Is(VU)].US[0] * 8;
-	if (W_It(VU))
-	{
-		if (VU->branch == 1)
-			VU->VI[W_It(VU)].US[0] = (VU->branchpc + 8) / 8;
-		else
-			VU->VI[W_It(VU)].US[0] = (VU->VI[REG_TPC].UL + 8) / 8;
-	}
-	vu1SetBranch(VU, bpc);
-}
-
-static void vu1_IBEQ(VURegs* VU)
-{
-	vu_s16 dest = VU->VI[W_It(VU)].US[0];
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_It(VU)) dest = VU->VIOldValue;
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (dest == src)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
-}
-
-static void vu1_IBNE(VURegs* VU)
-{
-	vu_s16 dest = VU->VI[W_It(VU)].US[0];
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_It(VU)) dest = VU->VIOldValue;
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (dest != src)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
-}
-
-static void vu1_IBLTZ(VURegs* VU)
-{
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (src < 0)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
-}
-
-static void vu1_IBGTZ(VURegs* VU)
-{
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (src > 0)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
-}
-
-static void vu1_IBLEZ(VURegs* VU)
-{
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (src <= 0)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
-}
-
-static void vu1_IBGEZ(VURegs* VU)
-{
-	vu_s16 src = VU->VI[W_Is(VU)].US[0];
-	if (VU->VIBackupCycles > 0)
-	{
-		if (VU->VIRegNumber == W_Is(VU)) src = VU->VIOldValue;
-	}
-	if (src >= 0)
-	{
-		s32 bpc = vu1BranchAddr(VU);
-		vu1SetBranch(VU, bpc);
-	}
 }
 
 // --- Flag operation wrappers ---
@@ -1738,64 +1595,264 @@ void recVU1_ISWR() {
 //  Branches
 // ============================================================================
 
+// Emit inline vu1SetBranch(VU, bpc). bpc is in w_bpc. Clobbers w4, w5.
+// Mirrors _setBranch() in VUops.cpp: if already in a delay slot (branch==1),
+// deferred onto delaybranchpc/takedelaybranch; otherwise sets branch=2 and
+// branchpc so the per-pair countdown (step 12) fires it two pairs later.
+static void emitInlineSetBranch(const Register& w_bpc)
+{
+	const int64_t branch_off        = static_cast<int64_t>(offsetof(VURegs, branch));
+	const int64_t branchpc_off      = static_cast<int64_t>(offsetof(VURegs, branchpc));
+	const int64_t delaybranchpc_off = static_cast<int64_t>(offsetof(VURegs, delaybranchpc));
+	const int64_t takedelay_off     = static_cast<int64_t>(offsetof(VURegs, takedelaybranch));
+
+	a64::Label is_delay, done;
+	armAsm->Ldr(w4, MemOperand(VU1_BASE_REG, branch_off));
+	armAsm->Cmp(w4, 1);
+	armAsm->B(&is_delay, a64::eq);
+
+	// Normal path: branch != 1 → set branch=2, branchpc=bpc
+	armAsm->Mov(w5, 2);
+	armAsm->Str(w5, MemOperand(VU1_BASE_REG, branch_off));
+	armAsm->Str(w_bpc, MemOperand(VU1_BASE_REG, branchpc_off));
+	armAsm->B(&done);
+
+	// Delay-slot-in-delay-slot path: branch == 1 → queue via delaybranchpc
+	armAsm->Bind(&is_delay);
+	armAsm->Str(w_bpc, MemOperand(VU1_BASE_REG, delaybranchpc_off));
+	armAsm->Mov(w5, 1);
+	armAsm->Strb(w5, MemOperand(VU1_BASE_REG, takedelay_off));
+
+	armAsm->Bind(&done);
+}
+
+// Emit hazard-corrected VI[reg].US[0] read.
+// The 2-cycle integer pipeline hazard: if VIBackupCycles > 0 and VIRegNumber
+// matches `reg`, return VIOldValue (which holds the pre-write u16) instead of
+// VI[reg].US[0]. reg is a compile-time constant.
+//   dest  : destination w-reg (result)
+//   reg   : VI register number (0..15)
+//   signed_read : emit Ldrsh instead of Ldrh (so IBLTZ/IBGTZ/etc. can compare signed)
+//   w_tmp : scratch w-reg, clobbered
+static void emitHazardVIRead(const Register& dest, u32 reg, bool signed_read, const Register& w_tmp)
+{
+	const int64_t vibackup_off = static_cast<int64_t>(offsetof(VURegs, VIBackupCycles));
+	const int64_t viregnum_off = static_cast<int64_t>(offsetof(VURegs, VIRegNumber));
+	const int64_t violdval_off = static_cast<int64_t>(offsetof(VURegs, VIOldValue));
+
+	if (signed_read)
+		armAsm->Ldrsh(dest, MemOperand(VU1_BASE_REG, viOff(reg)));
+	else
+		armAsm->Ldrh(dest, MemOperand(VU1_BASE_REG, viOff(reg)));
+
+	a64::Label done;
+	armAsm->Ldrb(w_tmp, MemOperand(VU1_BASE_REG, vibackup_off));
+	armAsm->Cbz(w_tmp, &done);                       // no backup active
+	armAsm->Ldr(w_tmp, MemOperand(VU1_BASE_REG, viregnum_off));
+	armAsm->Cmp(w_tmp, reg);
+	armAsm->B(&done, a64::ne);                        // different reg
+	// VIOldValue is u32 but holds the original u16 in its low halfword.
+	// Ldrsh/Ldrh from the low halfword matches the interpreter's
+	// `src = VU->VIOldValue` (truncation to s16 / u16 on assignment).
+	if (signed_read)
+		armAsm->Ldrsh(dest, MemOperand(VU1_BASE_REG, violdval_off));
+	else
+		armAsm->Ldrh(dest, MemOperand(VU1_BASE_REG, violdval_off));
+	armAsm->Bind(&done);
+}
+
+// Compute compile-time branch target for PC-relative branches (B/BAL/IBxx).
+// At emit time, step 2 of the per-pair loop has already stored
+// (pair_pc+8) & VU1_PROGMASK into VI[REG_TPC], so runtime TPC is known and
+// the full _branchAddr() formula resolves to a constant.
+static inline u32 vu1ComputePCRelTarget()
+{
+	const s32 pair_pc = static_cast<s32>(g_vu1CurrentPC);
+	const s32 imm11   = W_Imm11(&VU1);
+	const s32 tpc_val = static_cast<s32>((pair_pc + 8) & 0x3fff);
+	return static_cast<u32>((tpc_val + imm11 * 8) & 0x3fff);
+}
+
+// Emit BAL/JALR link register write. Called before emitInlineSetBranch.
+// The link value matches _vuBAL/_vuJALR in VUops.cpp: when already in a
+// delay slot (branch==1) we link to branchpc+8 (runtime), otherwise we
+// link to TPC+8 (compile-time since step 2 has already written TPC).
+// Does not touch branch state. it must be nonzero.
+static void emitBranchLinkWrite(u32 it)
+{
+	const int64_t branch_off   = static_cast<int64_t>(offsetof(VURegs, branch));
+	const int64_t branchpc_off = static_cast<int64_t>(offsetof(VURegs, branchpc));
+	const u32 runtime_tpc = (g_vu1CurrentPC + 8) & 0x3fff;
+	const u32 link_normal = (runtime_tpc + 8) / 8;
+
+	a64::Label is_delay, done;
+	armAsm->Ldr(w4, MemOperand(VU1_BASE_REG, branch_off));
+	armAsm->Cmp(w4, 1);
+	armAsm->B(&is_delay, a64::eq);
+
+	// Normal link: (TPC+8)/8 — compile-time constant
+	armAsm->Mov(w5, link_normal);
+	armAsm->Strh(w5, MemOperand(VU1_BASE_REG, viOff(it)));
+	armAsm->B(&done);
+
+	// In-delay-slot link: (branchpc+8)/8 — runtime
+	armAsm->Bind(&is_delay);
+	armAsm->Ldr(w4, MemOperand(VU1_BASE_REG, branchpc_off));
+	armAsm->Add(w4, w4, 8);
+	armAsm->Lsr(w4, w4, 3);
+	armAsm->Strh(w4, MemOperand(VU1_BASE_REG, viOff(it)));
+
+	armAsm->Bind(&done);
+}
+
 #if ISTUB_VU_B
 REC_VU1_LOWER_INTERP(B)
 #else
-REC_VU1_LOWER_CALL(B)
+void recVU1_B() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+}
 #endif
 
 #if ISTUB_VU_BAL
 REC_VU1_LOWER_INTERP(BAL)
 #else
-REC_VU1_LOWER_CALL(BAL)
+void recVU1_BAL() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 it  = W_It(&VU1);
+	if (it != 0)
+		emitBranchLinkWrite(it);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+}
 #endif
 
 #if ISTUB_VU_JR
 REC_VU1_LOWER_INTERP(JR)
 #else
-REC_VU1_LOWER_CALL(JR)
+void recVU1_JR() {
+	const u32 is = W_Is(&VU1);
+	// bpc = VI[is].US[0] * 8  (interpreter does no hazard check here)
+	armAsm->Ldrh(w3, MemOperand(VU1_BASE_REG, viOff(is)));
+	armAsm->Lsl(w3, w3, 3);
+	emitInlineSetBranch(w3);
+}
 #endif
 
 #if ISTUB_VU_JALR
 REC_VU1_LOWER_INTERP(JALR)
 #else
-REC_VU1_LOWER_CALL(JALR)
+void recVU1_JALR() {
+	const u32 is = W_Is(&VU1);
+	const u32 it = W_It(&VU1);
+	// Compute bpc into w3 first (preserved across link write — which only touches w4/w5)
+	armAsm->Ldrh(w3, MemOperand(VU1_BASE_REG, viOff(is)));
+	armAsm->Lsl(w3, w3, 3);
+	if (it != 0)
+		emitBranchLinkWrite(it);
+	emitInlineSetBranch(w3);
+}
 #endif
 
 #if ISTUB_VU_IBEQ
 REC_VU1_LOWER_INTERP(IBEQ)
 #else
-REC_VU1_LOWER_CALL(IBEQ)
+void recVU1_IBEQ() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 it  = W_It(&VU1);
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, it, false, w4);
+	emitHazardVIRead(w7, is, false, w4);
+	armAsm->Cmp(w6, w7);
+	armAsm->B(&not_taken, a64::ne);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 #if ISTUB_VU_IBNE
 REC_VU1_LOWER_INTERP(IBNE)
 #else
-REC_VU1_LOWER_CALL(IBNE)
+void recVU1_IBNE() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 it  = W_It(&VU1);
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, it, false, w4);
+	emitHazardVIRead(w7, is, false, w4);
+	armAsm->Cmp(w6, w7);
+	armAsm->B(&not_taken, a64::eq);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 #if ISTUB_VU_IBLTZ
 REC_VU1_LOWER_INTERP(IBLTZ)
 #else
-REC_VU1_LOWER_CALL(IBLTZ)
+void recVU1_IBLTZ() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, is, true, w4);
+	armAsm->Cmp(w6, 0);
+	armAsm->B(&not_taken, a64::ge);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 #if ISTUB_VU_IBGTZ
 REC_VU1_LOWER_INTERP(IBGTZ)
 #else
-REC_VU1_LOWER_CALL(IBGTZ)
+void recVU1_IBGTZ() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, is, true, w4);
+	armAsm->Cmp(w6, 0);
+	armAsm->B(&not_taken, a64::le);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 #if ISTUB_VU_IBLEZ
 REC_VU1_LOWER_INTERP(IBLEZ)
 #else
-REC_VU1_LOWER_CALL(IBLEZ)
+void recVU1_IBLEZ() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, is, true, w4);
+	armAsm->Cmp(w6, 0);
+	armAsm->B(&not_taken, a64::gt);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 #if ISTUB_VU_IBGEZ
 REC_VU1_LOWER_INTERP(IBGEZ)
 #else
-REC_VU1_LOWER_CALL(IBGEZ)
+void recVU1_IBGEZ() {
+	const u32 bpc = vu1ComputePCRelTarget();
+	const u32 is  = W_Is(&VU1);
+	a64::Label not_taken;
+	emitHazardVIRead(w6, is, true, w4);
+	armAsm->Cmp(w6, 0);
+	armAsm->B(&not_taken, a64::lt);
+	armAsm->Mov(w3, bpc);
+	emitInlineSetBranch(w3);
+	armAsm->Bind(&not_taken);
+}
 #endif
 
 // ============================================================================
