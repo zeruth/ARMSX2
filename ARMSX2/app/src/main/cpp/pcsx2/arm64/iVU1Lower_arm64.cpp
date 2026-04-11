@@ -1747,25 +1747,74 @@ void recVU1_FCGET() {
 #if ISTUB_VU_RINIT
 REC_VU1_LOWER_INTERP(RINIT)
 #else
-REC_VU1_LOWER_CALL(RINIT)
+void recVU1_RINIT() {
+	const u32 fs  = W_Fs(&VU1);
+	const u32 fsf = W_Fsf(&VU1);
+	// VI[REG_R].UL = 0x3F800000 | (VF[fs].UL[fsf] & 0x007FFFFF)
+	armAsm->Mov(w0, 0x3F800000u);
+	armAsm->Ldr(w1, MemOperand(VU1_BASE_REG, vfOff(fs) + fsf * 4));
+	armAsm->Bfi(w0, w1, 0, 23);
+	armAsm->Str(w0, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+}
 #endif
 
 #if ISTUB_VU_RGET
 REC_VU1_LOWER_INTERP(RGET)
 #else
-REC_VU1_LOWER_CALL(RGET)
+void recVU1_RGET() {
+	const u32 ft = W_Ft(&VU1);
+	if (ft == 0) return;
+	const u32 xyzw = W_XYZW(&VU1);
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+	if (xyzw & 8) armAsm->Str(w0, MemOperand(VU1_BASE_REG, vfOff(ft) + 0));
+	if (xyzw & 4) armAsm->Str(w0, MemOperand(VU1_BASE_REG, vfOff(ft) + 4));
+	if (xyzw & 2) armAsm->Str(w0, MemOperand(VU1_BASE_REG, vfOff(ft) + 8));
+	if (xyzw & 1) armAsm->Str(w0, MemOperand(VU1_BASE_REG, vfOff(ft) + 12));
+}
 #endif
 
 #if ISTUB_VU_RNEXT
 REC_VU1_LOWER_INTERP(RNEXT)
 #else
-REC_VU1_LOWER_CALL(RNEXT)
+void recVU1_RNEXT() {
+	const u32 ft = W_Ft(&VU1);
+	if (ft == 0) return;
+	const u32 xyzw = W_XYZW(&VU1);
+	// LFSR advance (mirrors AdvanceLFSR in VUops.cpp):
+	//   x = (R >> 4) & 1
+	//   y = (R >> 22) & 1
+	//   R = ((R << 1) ^ (x ^ y)) with exponent forced to 0x3F800000
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+	armAsm->Ubfx(w1, w0, 4, 1);            // w1 = x
+	armAsm->Ubfx(w2, w0, 22, 1);           // w2 = y
+	armAsm->Eor(w1, w1, w2);               // w1 = x ^ y
+	armAsm->Lsl(w0, w0, 1);                // R <<= 1 (bit0 becomes 0)
+	armAsm->Orr(w0, w0, w1);               // bit0 = x^y
+	armAsm->Mov(w2, 0x3F800000u);
+	armAsm->Bfi(w2, w0, 0, 23);            // w2 = 0x3F800000 | (R & 0x7FFFFF)
+	armAsm->Str(w2, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+	// Broadcast to selected VF[ft] components.
+	if (xyzw & 8) armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 0));
+	if (xyzw & 4) armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 4));
+	if (xyzw & 2) armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 8));
+	if (xyzw & 1) armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 12));
+}
 #endif
 
 #if ISTUB_VU_RXOR
 REC_VU1_LOWER_INTERP(RXOR)
 #else
-REC_VU1_LOWER_CALL(RXOR)
+void recVU1_RXOR() {
+	const u32 fs  = W_Fs(&VU1);
+	const u32 fsf = W_Fsf(&VU1);
+	// VI[REG_R].UL = 0x3F800000 | ((VI[REG_R].UL ^ VF[fs].UL[fsf]) & 0x007FFFFF)
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+	armAsm->Ldr(w1, MemOperand(VU1_BASE_REG, vfOff(fs) + fsf * 4));
+	armAsm->Eor(w1, w0, w1);
+	armAsm->Mov(w0, 0x3F800000u);
+	armAsm->Bfi(w0, w1, 0, 23);
+	armAsm->Str(w0, MemOperand(VU1_BASE_REG, viOff(REG_R)));
+}
 #endif
 
 // ============================================================================
