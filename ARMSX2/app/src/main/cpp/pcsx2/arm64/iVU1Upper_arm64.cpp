@@ -690,22 +690,6 @@ static float vu1Double(u32 f)
 	return *(float*)&f;
 }
 
-static void vu1_CLIP(VURegs* VU)
-{
-	const u32 fs = (VU->code >> 11) & 0x1F;
-	const u32 ft = (VU->code >> 16) & 0x1F;
-	s32 value    = static_cast<s32>(VU->VF[ft].i.w);
-	value = (value & 0x7f800000) ? value & 0x7fffffff : 0x007fffff;
-	VU->clipflag <<= 6;
-	if (static_cast<s32>(VU->VF[fs].i.x)               > value) VU->clipflag |= 0x01;
-	if (static_cast<s32>(VU->VF[fs].i.x ^ 0x80000000u) > value) VU->clipflag |= 0x02;
-	if (static_cast<s32>(VU->VF[fs].i.y)               > value) VU->clipflag |= 0x04;
-	if (static_cast<s32>(VU->VF[fs].i.y ^ 0x80000000u) > value) VU->clipflag |= 0x08;
-	if (static_cast<s32>(VU->VF[fs].i.z)               > value) VU->clipflag |= 0x10;
-	if (static_cast<s32>(VU->VF[fs].i.z ^ 0x80000000u) > value) VU->clipflag |= 0x20;
-	VU->clipflag &= 0xFFFFFF;
-}
-
 static void vu1_OPMULA(VURegs* VU)
 {
 	const u32 fs = (VU->code >> 11) & 0x1F;
@@ -1506,7 +1490,83 @@ FMAC_ABS(ABS)
 #if ISTUB_VU_CLIP
 REC_VU1_UPPER_INTERP(CLIP)
 #else
-REC_VU1_UPPER_CALL(CLIP)
+// Native CLIP — mirrors _vuCLIP (VUops.cpp:911).
+//
+//   value = VF[ft].i.w raw bits
+//   value = (value & 0x7f800000) ? (value & 0x7fffffff) : 0x007fffff
+//   clipflag = (clipflag << 6) & 0xFFFFFF
+//   for each component c in {x,y,z} at bit pairs 0/1, 2/3, 4/5:
+//     clipflag |= ((s32)VF[fs].c         > value) ? bit_pos : 0
+//     clipflag |= ((s32)VF[fs].c ^ 0x80..>> > value) ? bit_neg : 0
+//   store VU->clipflag
+//
+// All-scalar: six signed-int compares are cheap, a NEON round-trip would
+// save instructions but add lane-extract overhead. Registers used:
+//   w0  = value (denormal-adjusted |ft.w|)
+//   w1  = scratch for exponent mask
+//   w2  = 0x007fffff denormal constant
+//   w3/w4/w5 = fs.x / fs.y / fs.z raw bits
+//   w6  = new clipflag accumulator
+//   w7  = compare result (0/1)
+//   w8  = sign-flipped scratch
+void recVU1_CLIP() {
+	const u32 fs = (VU1.code >> 11) & 0x1F;
+	const u32 ft = (VU1.code >> 16) & 0x1F;
+	const int64_t clipflag_off = static_cast<int64_t>(offsetof(VURegs, clipflag));
+
+	// value = raw ft.w
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(ft) + 12));
+	// w1 = value & 0x7f800000 (exponent bits)
+	armAsm->And(w1, w0, 0x7f800000u);
+	// w0 = value & 0x7fffffff (abs value)
+	armAsm->And(w0, w0, 0x7fffffffu);
+	// w2 = 0x007fffff
+	armAsm->Mov(w2, 0x007fffffu);
+	// value = (exponent != 0) ? abs : 0x007fffff
+	armAsm->Cmp(w1, 0);
+	armAsm->Csel(w0, w0, w2, ne);
+
+	// Load fs.xyz (w=don't care)
+	armAsm->Ldr(w3, MemOperand(VU1_BASE_REG, vfOff(fs) + 0));
+	armAsm->Ldr(w4, MemOperand(VU1_BASE_REG, vfOff(fs) + 4));
+	armAsm->Ldr(w5, MemOperand(VU1_BASE_REG, vfOff(fs) + 8));
+
+	// w6 = VU->clipflag << 6
+	armAsm->Ldr(w6, MemOperand(VU1_BASE_REG, clipflag_off));
+	armAsm->Lsl(w6, w6, 6);
+
+	// bit 0: fs.x > value  (signed)
+	armAsm->Cmp(w3, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, w7);
+	// bit 1: (fs.x ^ 0x80000000) > value
+	armAsm->Eor(w8, w3, 0x80000000u);
+	armAsm->Cmp(w8, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, Operand(w7, LSL, 1));
+	// bit 2: fs.y > value
+	armAsm->Cmp(w4, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, Operand(w7, LSL, 2));
+	// bit 3: (fs.y ^ 0x80000000) > value
+	armAsm->Eor(w8, w4, 0x80000000u);
+	armAsm->Cmp(w8, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, Operand(w7, LSL, 3));
+	// bit 4: fs.z > value
+	armAsm->Cmp(w5, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, Operand(w7, LSL, 4));
+	// bit 5: (fs.z ^ 0x80000000) > value
+	armAsm->Eor(w8, w5, 0x80000000u);
+	armAsm->Cmp(w8, w0);
+	armAsm->Cset(w7, gt);
+	armAsm->Orr(w6, w6, Operand(w7, LSL, 5));
+
+	// Mask to 24 bits and store.
+	armAsm->And(w6, w6, 0xFFFFFFu);
+	armAsm->Str(w6, MemOperand(VU1_BASE_REG, clipflag_off));
+}
 #endif
 
 #if ISTUB_VU_OPMULA

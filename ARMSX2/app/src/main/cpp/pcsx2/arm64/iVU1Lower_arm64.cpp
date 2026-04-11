@@ -421,46 +421,8 @@ static void vu1_RXOR(VURegs* VU)
 	VU->VI[REG_R].UL = 0x3F800000 | ((VU->VI[REG_R].UL ^ VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]) & 0x007FFFFF);
 }
 
-// --- EFU wrappers ---
-static void vu1_ESADD(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].i.x) * vu1Double(VU->VF[W_Fs(VU)].i.x)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.y) * vu1Double(VU->VF[W_Fs(VU)].i.y)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.z) * vu1Double(VU->VF[W_Fs(VU)].i.z);
-	VU->p.F = p;
-}
-
-static void vu1_ERSADD(VURegs* VU)
-{
-	float p = (vu1Double(VU->VF[W_Fs(VU)].i.x) * vu1Double(VU->VF[W_Fs(VU)].i.x))
-			+ (vu1Double(VU->VF[W_Fs(VU)].i.y) * vu1Double(VU->VF[W_Fs(VU)].i.y))
-			+ (vu1Double(VU->VF[W_Fs(VU)].i.z) * vu1Double(VU->VF[W_Fs(VU)].i.z));
-	if (p != 0.0) p = 1.0f / p;
-	VU->p.F = p;
-}
-
-static void vu1_ELENG(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].i.x) * vu1Double(VU->VF[W_Fs(VU)].i.x)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.y) * vu1Double(VU->VF[W_Fs(VU)].i.y)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.z) * vu1Double(VU->VF[W_Fs(VU)].i.z);
-	if (p >= 0) p = sqrt(p);
-	VU->p.F = p;
-}
-
-static void vu1_ERLENG(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].i.x) * vu1Double(VU->VF[W_Fs(VU)].i.x)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.y) * vu1Double(VU->VF[W_Fs(VU)].i.y)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.z) * vu1Double(VU->VF[W_Fs(VU)].i.z);
-	if (p >= 0)
-	{
-		p = sqrt(p);
-		if (p != 0) p = 1.0f / p;
-	}
-	VU->p.F = p;
-}
-
+// --- EFU wrappers (transcendentals only — ESADD/ERSADD/ELENG/ERLENG/ESUM/
+//     ERCPR/ESQRT/ERSQRT are native; see recVU1_ESADD et al. below). ---
 static void vu1_EATANxy(VURegs* VU)
 {
 	float p = 0;
@@ -474,38 +436,6 @@ static void vu1_EATANxz(VURegs* VU)
 	float p = 0;
 	if (vu1Double(VU->VF[W_Fs(VU)].i.x) != 0)
 		p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].i.z) / vu1Double(VU->VF[W_Fs(VU)].i.x));
-	VU->p.F = p;
-}
-
-static void vu1_ESUM(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].i.x) + vu1Double(VU->VF[W_Fs(VU)].i.y)
-			+ vu1Double(VU->VF[W_Fs(VU)].i.z) + vu1Double(VU->VF[W_Fs(VU)].i.w);
-	VU->p.F = p;
-}
-
-static void vu1_ERCPR(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]);
-	if (p != 0) p = 1.0f / p;
-	VU->p.F = p;
-}
-
-static void vu1_ESQRT(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]);
-	if (p >= 0) p = sqrt(p);
-	VU->p.F = p;
-}
-
-static void vu1_ERSQRT(VURegs* VU)
-{
-	float p = vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]);
-	if (p >= 0)
-	{
-		p = sqrt(p);
-		if (p) p = 1.0f / p;
-	}
 	VU->p.F = p;
 }
 
@@ -2157,30 +2087,117 @@ void recVU1_RXOR() {
 
 // ============================================================================
 //  EFU — Elementary Function Unit (VU1 only)
+//
+//  Native emitters for the non-transcendental ops (ESADD/ERSADD/ELENG/ERLENG/
+//  ESUM/ERCPR/ESQRT/ERSQRT). Each writes the running `VU->p` field; the 29-
+//  cycle EFU pipeline then moves that value into VI[REG_P] via vu1_EFUAdd →
+//  vu1_TestPipes_VU1's EFU flush, unchanged.
+//
+//  Inputs are vuDouble-clamped one lane at a time (matches _vuESADD et al. in
+//  VUops.cpp). Outputs are NOT clamped — none of these ops wrap the result in
+//  vuDouble() in the interpreter.
+//
+//  EATAN / EATANxy / EATANxz / ESIN / EEXP stay on C-helper dispatch — they're
+//  8th/13th-order polynomials with pow() calls and aren't worth inlining.
 // ============================================================================
+
+// Helper: load VF[fs].x/y/z, vuDouble-clamp each, leave squared-sum in s0.
+// Clobbers w0/w1 (integer scratch) and s0/s1/s2 (FP scratch).
+static void emitEFUSumSquaresXYZ(u32 fs)
+{
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 0));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s0, w0);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 4));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s1, w0);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 8));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s2, w0);
+
+	armAsm->Fmul(s0, s0, s0);
+	armAsm->Fmul(s1, s1, s1);
+	armAsm->Fmul(s2, s2, s2);
+	armAsm->Fadd(s0, s0, s1);
+	armAsm->Fadd(s0, s0, s2);
+}
+
+// Helper: store s0 → VU->p (as raw bits). Clobbers w0.
+static void emitEFUStoreP()
+{
+	const int64_t p_off = static_cast<int64_t>(offsetof(VURegs, p));
+	armAsm->Fmov(w0, s0);
+	armAsm->Str(w0, MemOperand(VU1_BASE_REG, p_off));
+}
 
 #if ISTUB_VU_ESADD
 REC_VU1_LOWER_INTERP(ESADD)
 #else
-REC_VU1_LOWER_CALL(ESADD)
+void recVU1_ESADD() {
+	// p = fs.x² + fs.y² + fs.z²
+	const u32 fs = W_Fs(&VU1);
+	emitEFUSumSquaresXYZ(fs);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ERSADD
 REC_VU1_LOWER_INTERP(ERSADD)
 #else
-REC_VU1_LOWER_CALL(ERSADD)
+void recVU1_ERSADD() {
+	// p = fs.x² + fs.y² + fs.z²; if (p != 0) p = 1/p
+	const u32 fs = W_Fs(&VU1);
+	emitEFUSumSquaresXYZ(fs);
+	a64::Label skip;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip, a64::eq);
+	armAsm->Fmov(s1, 1.0f);
+	armAsm->Fdiv(s0, s1, s0);
+	armAsm->Bind(&skip);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ELENG
 REC_VU1_LOWER_INTERP(ELENG)
 #else
-REC_VU1_LOWER_CALL(ELENG)
+void recVU1_ELENG() {
+	// p = fs.x² + fs.y² + fs.z²; if (p >= 0) p = sqrt(p)
+	// Sum-of-squares is always ≥0 for finite inputs, but mirror the
+	// interpreter's defensive guard so NaN propagates unchanged.
+	const u32 fs = W_Fs(&VU1);
+	emitEFUSumSquaresXYZ(fs);
+	a64::Label skip;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip, a64::lt); // p<0 or unordered → skip sqrt
+	armAsm->Fsqrt(s0, s0);
+	armAsm->Bind(&skip);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ERLENG
 REC_VU1_LOWER_INTERP(ERLENG)
 #else
-REC_VU1_LOWER_CALL(ERLENG)
+void recVU1_ERLENG() {
+	// p = fs.x² + fs.y² + fs.z²;
+	// if (p >= 0) { p = sqrt(p); if (p != 0) p = 1/p; }
+	const u32 fs = W_Fs(&VU1);
+	emitEFUSumSquaresXYZ(fs);
+	a64::Label skip_all, skip_rcp;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip_all, a64::lt);
+	armAsm->Fsqrt(s0, s0);
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip_rcp, a64::eq);
+	armAsm->Fmov(s1, 1.0f);
+	armAsm->Fdiv(s0, s1, s0);
+	armAsm->Bind(&skip_rcp);
+	armAsm->Bind(&skip_all);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_EATANxy
@@ -2198,25 +2215,101 @@ REC_VU1_LOWER_CALL(EATANxz)
 #if ISTUB_VU_ESUM
 REC_VU1_LOWER_INTERP(ESUM)
 #else
-REC_VU1_LOWER_CALL(ESUM)
+void recVU1_ESUM() {
+	// p = fs.x + fs.y + fs.z + fs.w
+	const u32 fs = W_Fs(&VU1);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 0));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s0, w0);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 4));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s1, w0);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 8));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s2, w0);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + 12));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s3, w0);
+
+	armAsm->Fadd(s0, s0, s1);
+	armAsm->Fadd(s0, s0, s2);
+	armAsm->Fadd(s0, s0, s3);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ERCPR
 REC_VU1_LOWER_INTERP(ERCPR)
 #else
-REC_VU1_LOWER_CALL(ERCPR)
+void recVU1_ERCPR() {
+	// p = vuDouble(fs[fsf]); if (p != 0) p = 1/p
+	const u32 fs  = W_Fs(&VU1);
+	const u32 fsf = W_Fsf(&VU1);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + fsf * 4));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s0, w0);
+
+	a64::Label skip;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip, a64::eq);
+	armAsm->Fmov(s1, 1.0f);
+	armAsm->Fdiv(s0, s1, s0);
+	armAsm->Bind(&skip);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ESQRT_EFU
 REC_VU1_LOWER_INTERP(ESQRT)
 #else
-REC_VU1_LOWER_CALL(ESQRT)
+void recVU1_ESQRT() {
+	// p = vuDouble(fs[fsf]); if (p >= 0) p = sqrt(p)
+	const u32 fs  = W_Fs(&VU1);
+	const u32 fsf = W_Fsf(&VU1);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + fsf * 4));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s0, w0);
+
+	a64::Label skip;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip, a64::lt);
+	armAsm->Fsqrt(s0, s0);
+	armAsm->Bind(&skip);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ERSQRT
 REC_VU1_LOWER_INTERP(ERSQRT)
 #else
-REC_VU1_LOWER_CALL(ERSQRT)
+void recVU1_ERSQRT() {
+	// p = vuDouble(fs[fsf]);
+	// if (p >= 0) { p = sqrt(p); if (p != 0) p = 1/p; }
+	const u32 fs  = W_Fs(&VU1);
+	const u32 fsf = W_Fsf(&VU1);
+
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, vfOff(fs) + fsf * 4));
+	emitVuDouble(w0, w1);
+	armAsm->Fmov(s0, w0);
+
+	a64::Label skip_all, skip_rcp;
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip_all, a64::lt);
+	armAsm->Fsqrt(s0, s0);
+	armAsm->Fcmp(s0, 0.0);
+	armAsm->B(&skip_rcp, a64::eq);
+	armAsm->Fmov(s1, 1.0f);
+	armAsm->Fdiv(s0, s1, s0);
+	armAsm->Bind(&skip_rcp);
+	armAsm->Bind(&skip_all);
+	emitEFUStoreP();
+}
 #endif
 
 #if ISTUB_VU_ESIN
