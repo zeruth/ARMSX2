@@ -13,6 +13,7 @@
 
 #if defined(__aarch64__) || defined(_M_ARM64)
 #include "arm64/intNativeOps.h"
+#include "arm64/TraceBlocks.h"
 #endif
 
 #include <float.h>
@@ -618,6 +619,9 @@ static void intExecute()
 
 			while (true)
 			{
+#ifdef TRACE_BLOCKS
+				eeTraceBlock(cpuRegs.pc);
+#endif
 				execI();
 
 				if (cpuRegs.pc == EELOAD_START)
@@ -665,7 +669,12 @@ static void intExecute()
 		else
 		{
 			while (true)
+			{
+#ifdef TRACE_BLOCKS
+				eeTraceBlock(cpuRegs.pc);
+#endif
 				execI();
+			}
 		}
 	}
 }

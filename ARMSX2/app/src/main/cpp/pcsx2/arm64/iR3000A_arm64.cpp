@@ -23,6 +23,8 @@
 #include "Config.h"
 #include "VMManager.h"
 #include "common/Console.h"
+
+#include "arm64/TraceBlocks.h"
 #include "common/HeapArray.h"
 #include "common/Perf.h"
 #include "DebugTools/Breakpoints.h"
@@ -816,6 +818,12 @@ StartRecomp:
 
 	// Compile instructions
 	g_pCurInstInfo = s_pInstCache;
+
+#ifdef TRACE_BLOCKS
+	armAsm->Mov(RWARG1, startpc);
+	armEmitCall((void*)iopTraceBlock);
+#endif
+
 	while (!psxbranch && psxpc < s_nEndBlock)
 	{
 		psxRecompileNextInstruction(false, false);

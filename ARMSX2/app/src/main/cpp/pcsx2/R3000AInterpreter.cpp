@@ -11,6 +11,10 @@
 #include "IopBios.h"
 #include "IopHw.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "arm64/TraceBlocks.h"
+#endif
+
 using namespace R3000A;
 
 // Used to flag delay slot instructions when throwig exceptions.
@@ -285,7 +289,12 @@ static s32 intExecuteBlock( s32 eeCycles )
 
 		branch2 = 0;
 		while (!branch2)
+		{
+#ifdef TRACE_BLOCKS
+			iopTraceBlock(psxRegs.pc);
+#endif
 			execI();
+		}
 
 		
 		if ((psxHu32(HW_ICFG) & (1 << 3)))
