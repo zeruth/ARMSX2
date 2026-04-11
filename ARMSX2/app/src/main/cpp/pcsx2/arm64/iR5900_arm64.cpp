@@ -606,9 +606,19 @@ void armBranchCallInterpreter(void (*func)())
 	// nextEventCycle = cycle  (force the post-call iBranchTest into DispatcherEvent)
 	armAsm->Str(a64::x0, a64::MemOperand(RCPUSTATE, NEXT_EVENT_CYCLE_OFFSET));
 
-	// armCallInterpreter now handles flush-before / reload-after internally,
-	// so we don't need a separate armReloadCycle() here.
-	armCallInterpreter(func);
+	// Flush PC, code, and const regs — but NOT cycle (already flushed above).
+	// We cannot delegate to armCallInterpreter here because it calls
+	// armEmitFlushCycleBeforeCall, which would re-read the nec we just set
+	// to cycle and add RCYCLE again, double-counting the accumulated delta.
+	armFlushPC();
+	armFlushCode();
+	armFlushConstRegs();
+
+	armEmitCall((const void*)func);
+	armEmitReloadCycleAfterCall();
+
+	g_cpuHasConstReg = 1;
+	g_cpuFlushedConstReg = 1;
 	g_branch = 2;
 }
 
