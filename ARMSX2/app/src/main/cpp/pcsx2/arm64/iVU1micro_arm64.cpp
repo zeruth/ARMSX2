@@ -657,9 +657,8 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		// 1. VU->cycle++
 		//    Save cycle-1 (= cycle before this pair) in x22 for VIBackupCycles.
 		//    x22 is callee-saved and already saved/restored in our prologue/epilogue.
-		armAsm->Ldr(x4, MemOperand(VU1_BASE_REG, cycle_off));
-		armAsm->Mov(x22, x4);  // cyclesBefore = old cycle (before ++)
-		armAsm->Add(x4, x4, 1);
+		armAsm->Ldr(x22, MemOperand(VU1_BASE_REG, cycle_off));
+		armAsm->Add(x4, x22, 1);
 		armAsm->Str(x4, MemOperand(VU1_BASE_REG, cycle_off));
 
 		// 2. Advance TPC to next pair (compile-time constant).
