@@ -333,6 +333,74 @@ static void vu1_IALUAdd(VURegs* VU, int cycles, u32 VIwrite)
 	VU->ialucount++;
 }
 
+// VU1-specialized _vuTestPipes. Mirrors the body of _vuTestPipes / _vuFMACflush /
+// _vuFDIVflush / _vuEFUflush / _vuIALUflush from VUops.cpp, with two deletions:
+//
+//  1. No XGKICK transfer block. The arm64 rec bypasses VU1.xgkickenable via
+//     the vu1_XGKICK capture hack (see project_rec_vu1_xgkick_hack) — kicks
+//     are fired one pair later by vu1_XGKICK_fire_deferred. `_vuTestPipes`'s
+//     `if (VU1.xgkickenable) _vuXGKICKTransfer(...)` would never trigger for
+//     us anyway, so eliding it avoids a dead load+branch every pair.
+//
+//  2. No `do { } while (flushed)` retry loop. None of the four flush functions
+//     enqueue anything, so a single pass is always equivalent to the fixpoint.
+//
+// Called once per pair (step 6 of CompileBlock), so keeping it tight matters.
+// Kept in sync with the originals — when any of the VUops.cpp flush bodies
+// change, this must be updated too.
+static void vu1_TestPipes_VU1(VURegs* VU)
+{
+	// --- FMAC flush ---
+	for (int i = VU->fmacreadpos; VU->fmaccount > 0; i = (i + 1) & 3)
+	{
+		if ((VU->cycle - VU->fmac[i].sCycle) < VU->fmac[i].Cycle)
+			break;
+
+		if (VU->fmac[i].flagreg & (1 << REG_CLIP_FLAG))
+			VU->VI[REG_CLIP_FLAG].UL = VU->fmac[i].clipflag;
+
+		if (VU->fmac[i].flagreg & (1 << REG_STATUS_FLAG))
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0x30)
+				| (VU->fmac[i].statusflag & 0xFC0)
+				| (VU->fmac[i].statusflag & 0xF);
+		else
+			VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFF0)
+				| (VU->fmac[i].statusflag & 0xF)
+				| ((VU->fmac[i].statusflag & 0xF) << 6);
+		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
+
+		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
+		VU->fmaccount--;
+	}
+
+	// --- FDIV flush ---
+	if (VU->fdiv.enable != 0
+		&& (VU->cycle - VU->fdiv.sCycle) >= VU->fdiv.Cycle)
+	{
+		VU->fdiv.enable = 0;
+		VU->VI[REG_Q].UL = VU->fdiv.reg.UL;
+		VU->VI[REG_STATUS_FLAG].UL = (VU->VI[REG_STATUS_FLAG].UL & 0xFCF)
+			| (VU->fdiv.statusflag & 0xC30);
+	}
+
+	// --- EFU flush ---
+	if (VU->efu.enable != 0
+		&& (VU->cycle - VU->efu.sCycle) >= VU->efu.Cycle)
+	{
+		VU->efu.enable = 0;
+		VU->VI[REG_P].UL = VU->efu.reg.UL;
+	}
+
+	// --- IALU flush (pop only, no flag writes) ---
+	for (int i = VU->ialureadpos; VU->ialucount > 0; i = (i + 1) & 3)
+	{
+		if ((VU->cycle - VU->ialu[i].sCycle) < VU->ialu[i].Cycle)
+			break;
+		VU->ialureadpos = (VU->ialureadpos + 1) & 3;
+		VU->ialucount--;
+	}
+}
+
 // ============================================================================
 //  Block analysis helpers
 // ============================================================================
@@ -779,9 +847,11 @@ static u8* CompileBlock(u32 startPC, u32 numPairs)
 		if (!ibit)
 			emitTestLowerStalls(lregs);
 
-		// 6. Test pipes (always, after lower stalls for non-I-bit).
+		// 6. Test pipes (always, after lower stalls for non-I-bit). Uses the
+		//    VU1-specialized helper that skips the XGKICK block and the
+		//    do-while retry loop — see vu1_TestPipes_VU1 definition above.
 		armAsm->Mov(x0, VU1_BASE_REG);
-		armEmitCall(reinterpret_cast<const void*>(_vuTestPipes));
+		armEmitCall(reinterpret_cast<const void*>(vu1_TestPipes_VU1));
 
 		// 6b. Decrement VIBackupCycles (needed for correct VI backup reads
 		//     in branch instructions). x22 holds cycle value before this pair.
