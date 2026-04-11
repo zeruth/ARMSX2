@@ -73,6 +73,34 @@ static void vu1_fmac_writeback(VURegs* VU, VECTOR* dst, u32 xyzw,
 	VU_STAT_UPDATE(VU);
 }
 
+// OPMULA writeback: MAC flag update on xyz + ACC write, MAC[w] preserved.
+// Interpreter _vuOPMULA never touches macflag[w], so we cannot use
+// vu1_fmac_writeback (which calls VU_MACw_CLEAR on xyzw & 1 == 0).
+static void vu1_opmula_writeback(VURegs* VU, float rx, float ry, float rz)
+{
+	VU->ACC.i.x = VU_MACx_UPDATE(VU, rx);
+	VU->ACC.i.y = VU_MACy_UPDATE(VU, ry);
+	VU->ACC.i.z = VU_MACz_UPDATE(VU, rz);
+	VU_STAT_UPDATE(VU);
+}
+
+// OPMSUB writeback: MAC flag update on xyz + VF[fd].xyz write, MAC[w]/VF[fd].w preserved.
+// When fd == 0 the interpreter writes to a dummy RDzero but still updates
+// MAC/Status — we skip the VF write while keeping the flag updates.
+static void vu1_opmsub_writeback(VURegs* VU, u32 fd, float rx, float ry, float rz)
+{
+	const u32 vx = VU_MACx_UPDATE(VU, rx);
+	const u32 vy = VU_MACy_UPDATE(VU, ry);
+	const u32 vz = VU_MACz_UPDATE(VU, rz);
+	if (fd != 0)
+	{
+		VU->VF[fd].i.x = vx;
+		VU->VF[fd].i.y = vy;
+		VU->VF[fd].i.z = vz;
+	}
+	VU_STAT_UPDATE(VU);
+}
+
 // Emit the call to vu1_fmac_writeback.
 // Result must be in v5.4S. dst_off = byte offset of destination from VU1_BASE_REG.
 static void emitFmacWriteback(int64_t dst_off, u32 xyzw)
@@ -283,6 +311,92 @@ static void emitTernaryFmac(bool subtract, u32 fs, int64_t dst_off, u32 xyzw)
 		if (clampOutput)
 			emitVuClampVec(v5.V4S());
 		emitFmacStoreMasked(dst_off, xyzw);
+	}
+}
+
+// --- OPMULA / OPMSUB: cross-product outer-product FMAC ---
+//
+// OPMULA: ACC.xyz  = (fs.y*ft.z, fs.z*ft.x, fs.x*ft.y)     — ACC.w preserved
+// OPMSUB: VF[fd].xyz = ACC.xyz - (fs.y*ft.z, fs.z*ft.x, fs.x*ft.y) — VF[fd].w preserved
+//
+// Only xyz lanes are meaningful; the instruction's xyzw field is ignored by
+// the interpreter (MAC[w] is never touched either — that's why these need
+// their own writeback helpers instead of vu1_fmac_writeback).
+//
+// Permutation layout:
+//   v2 = {fs.y, fs.z, fs.x, _}   v3 = {ft.z, ft.x, ft.y, _}
+// so that v4 = v2 * v3 produces lanes [rx, ry, rz, _] in natural ACC order.
+//
+// isSub: false=OPMULA (result→ACC), true=OPMSUB (result→VF[fd], fd_param used)
+// fd_or_zero: for OPMSUB, the destination VF index (compile-time from VU1.code);
+//             ignored for OPMULA (pass 0).
+static void emitOpFmac(bool isSub, u32 fs, u32 ft, u32 fd_or_zero)
+{
+	const bool needsFlags  = g_vu1NeedsFlags;
+	const bool clampInputs = CHECK_VU_SIGN_OVERFLOW(0) || CHECK_VU_SIGN_OVERFLOW(1);
+	const bool clampOutput = !needsFlags && CHECK_VU_OVERFLOW(1);
+
+	armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+	armAsm->Ldr(q1, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	if (isSub)
+		armAsm->Ldr(q5, MemOperand(VU1_BASE_REG, accOff()));
+
+	if (clampInputs || clampOutput)
+		emitVuClampSetup();
+	if (clampInputs)
+	{
+		emitVuClampVec(v0.V4S());
+		emitVuClampVec(v1.V4S());
+		if (isSub)
+			emitVuClampVec(v5.V4S()); // ACC is a third input to OPMSUB
+	}
+
+	// Permute fs → v2 = {y, z, x, _}
+	armAsm->Mov(v2.V4S(), 0, v0.V4S(), 1);
+	armAsm->Mov(v2.V4S(), 1, v0.V4S(), 2);
+	armAsm->Mov(v2.V4S(), 2, v0.V4S(), 0);
+	// Permute ft → v3 = {z, x, y, _}
+	armAsm->Mov(v3.V4S(), 0, v1.V4S(), 2);
+	armAsm->Mov(v3.V4S(), 1, v1.V4S(), 0);
+	armAsm->Mov(v3.V4S(), 2, v1.V4S(), 1);
+
+	if (isSub)
+	{
+		// Separate FMUL then FSUB (no FMLS — PS2 has non-fused rounding).
+		armAsm->Fmul(v4.V4S(), v2.V4S(), v3.V4S());
+		armAsm->Fsub(v5.V4S(), v5.V4S(), v4.V4S());
+	}
+	else
+	{
+		// OPMULA: product goes straight into v5 (the writeback source).
+		armAsm->Fmul(v5.V4S(), v2.V4S(), v3.V4S());
+	}
+
+	if (needsFlags)
+	{
+		// Extract v5 lanes 0/1/2 into s0/s1/s2 for the helper call.
+		armAsm->Mov(v2.V4S(), 0, v5.V4S(), 2); // s2 = rz
+		armAsm->Mov(v1.V4S(), 0, v5.V4S(), 1); // s1 = ry
+		armAsm->Fmov(s0, s5);                    // s0 = rx
+		armAsm->Mov(x0, VU1_BASE_REG);
+		if (isSub)
+		{
+			armAsm->Mov(w1, fd_or_zero);
+			armEmitCall(reinterpret_cast<const void*>(vu1_opmsub_writeback));
+		}
+		else
+		{
+			armEmitCall(reinterpret_cast<const void*>(vu1_opmula_writeback));
+		}
+	}
+	else
+	{
+		if (clampOutput)
+			emitVuClampVec(v5.V4S());
+		// xyzw = 0xE → xyz write only, W lane preserved by merge-load-store.
+		// For OPMSUB fd==0, emitFmacStoreMasked early-outs on dst_off==vfOff(0).
+		const int64_t dst_off = isSub ? vfOff(fd_or_zero) : accOff();
+		emitFmacStoreMasked(dst_off, 0xE);
 	}
 }
 
@@ -1398,13 +1512,22 @@ REC_VU1_UPPER_CALL(CLIP)
 #if ISTUB_VU_OPMULA
 REC_VU1_UPPER_INTERP(OPMULA)
 #else
-REC_VU1_UPPER_CALL(OPMULA)
+void recVU1_OPMULA() {
+	const u32 fs = (VU1.code >> 11) & 0x1F;
+	const u32 ft = (VU1.code >> 16) & 0x1F;
+	emitOpFmac(/*isSub=*/false, fs, ft, /*fd=*/0);
+}
 #endif
 
 #if ISTUB_VU_OPMSUB
 REC_VU1_UPPER_INTERP(OPMSUB)
 #else
-REC_VU1_UPPER_CALL(OPMSUB)
+void recVU1_OPMSUB() {
+	const u32 fd = (VU1.code >>  6) & 0x1F;
+	const u32 fs = (VU1.code >> 11) & 0x1F;
+	const u32 ft = (VU1.code >> 16) & 0x1F;
+	emitOpFmac(/*isSub=*/true, fs, ft, fd);
+}
 #endif
 
 #if ISTUB_VU_NOP

@@ -1448,13 +1448,87 @@ void recVU1_LQ() {
 #if ISTUB_VU_LQD
 REC_VU1_LOWER_INTERP(LQD)
 #else
-REC_VU1_LOWER_CALL(LQD)
+void recVU1_LQD() {
+	const u32 ft = W_Ft(&VU1);
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	// Interpreter unconditionally backs up VI[is] before the decrement.
+	emitBackupVI(is);
+
+	// Pre-decrement VI[is] — gated on is != 0 so VI[0] (hardwired 0) is left alone.
+	if (is != 0)
+	{
+		armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(is)));
+		armAsm->Sub(w2, w2, 1);
+		armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(is)));
+	}
+
+	if (ft == 0) return;
+
+	// Address = (VI[is] & 0x3FF) * 16 — interpreter uses US[0] (unsigned), but
+	// the final 0x3FF0 mask makes sign of the 16->32 extension irrelevant.
+	emitComputeVuMemOffset(is, 0);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Ldr(q0, MemOperand(x1));
+		armAsm->Str(q0, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+	else
+	{
+		if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(x1,  0)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  0)); }
+		if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(x1,  4)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  4)); }
+		if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(x1,  8)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  8)); }
+		if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(x1, 12)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 12)); }
+	}
+}
 #endif
 
 #if ISTUB_VU_LQI
 REC_VU1_LOWER_INTERP(LQI)
 #else
-REC_VU1_LOWER_CALL(LQI)
+void recVU1_LQI() {
+	const u32 ft = W_Ft(&VU1);
+	const u32 is = W_Is(&VU1);
+	const u32 fs = W_Fs(&VU1); // interpreter gates the increment on W_Fs (bit 15 quirk)
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitBackupVI(is);
+
+	// Load uses VI[is] pre-increment.
+	if (ft != 0)
+	{
+		emitComputeVuMemOffset(is, 0);
+		armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+		armAsm->Add(x1, x1, x0);
+
+		if (xyzw == 0xF)
+		{
+			armAsm->Ldr(q0, MemOperand(x1));
+			armAsm->Str(q0, MemOperand(VU1_BASE_REG, vfOff(ft)));
+		}
+		else
+		{
+			if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(x1,  0)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  0)); }
+			if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(x1,  4)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  4)); }
+			if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(x1,  8)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  8)); }
+			if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(x1, 12)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 12)); }
+		}
+	}
+
+	// Post-increment — interpreter gates on fs != 0, not is != 0.
+	if (fs != 0)
+	{
+		armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(is)));
+		armAsm->Add(w2, w2, 1);
+		armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(is)));
+	}
+}
 #endif
 
 #if ISTUB_VU_SQ
@@ -1489,13 +1563,79 @@ void recVU1_SQ() {
 #if ISTUB_VU_SQD
 REC_VU1_LOWER_INTERP(SQD)
 #else
-REC_VU1_LOWER_CALL(SQD)
+void recVU1_SQD() {
+	const u32 fs = W_Fs(&VU1);
+	const u32 it = W_It(&VU1);
+	const u32 ft = W_Ft(&VU1); // interpreter gates the decrement on W_Ft, not W_It
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitBackupVI(it);
+
+	// Pre-decrement — interpreter quirk: gated on ft != 0, not it != 0.
+	if (ft != 0)
+	{
+		armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+		armAsm->Sub(w2, w2, 1);
+		armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+	}
+
+	emitComputeVuMemOffset(it, 0);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+		armAsm->Str(q0, MemOperand(x1));
+	}
+	else
+	{
+		if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  0)); armAsm->Str(w2, MemOperand(x1,  0)); }
+		if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  4)); armAsm->Str(w2, MemOperand(x1,  4)); }
+		if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  8)); armAsm->Str(w2, MemOperand(x1,  8)); }
+		if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) + 12)); armAsm->Str(w2, MemOperand(x1, 12)); }
+	}
+}
 #endif
 
 #if ISTUB_VU_SQI
 REC_VU1_LOWER_INTERP(SQI)
 #else
-REC_VU1_LOWER_CALL(SQI)
+void recVU1_SQI() {
+	const u32 fs = W_Fs(&VU1);
+	const u32 it = W_It(&VU1);
+	const u32 ft = W_Ft(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitBackupVI(it);
+
+	emitComputeVuMemOffset(it, 0);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+		armAsm->Str(q0, MemOperand(x1));
+	}
+	else
+	{
+		if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  0)); armAsm->Str(w2, MemOperand(x1,  0)); }
+		if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  4)); armAsm->Str(w2, MemOperand(x1,  4)); }
+		if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  8)); armAsm->Str(w2, MemOperand(x1,  8)); }
+		if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) + 12)); armAsm->Str(w2, MemOperand(x1, 12)); }
+	}
+
+	// Post-increment — same W_Ft gate as SQD's decrement.
+	if (ft != 0)
+	{
+		armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+		armAsm->Add(w2, w2, 1);
+		armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+	}
+}
 #endif
 
 #if ISTUB_VU_ILW
@@ -1549,13 +1689,49 @@ void recVU1_ISW() {
 #if ISTUB_VU_ILWR
 REC_VU1_LOWER_INTERP(ILWR)
 #else
-REC_VU1_LOWER_CALL(ILWR)
+void recVU1_ILWR() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitBackupVI(it);
+
+	emitComputeVuMemOffset(is, 0);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	// ptr is u16*: ptr[0]/ptr[2]/ptr[4]/ptr[6] = byte offsets 0/4/8/12.
+	// Last-set xyzw bit wins — emit in order to match interpreter.
+	if (xyzw & 8) { armAsm->Ldrh(w2, MemOperand(x1,  0)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 4) { armAsm->Ldrh(w2, MemOperand(x1,  4)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 2) { armAsm->Ldrh(w2, MemOperand(x1,  8)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 1) { armAsm->Ldrh(w2, MemOperand(x1, 12)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+}
 #endif
 
 #if ISTUB_VU_ISWR
 REC_VU1_LOWER_INTERP(ISWR)
 #else
-REC_VU1_LOWER_CALL(ISWR)
+void recVU1_ISWR() {
+	const u32 it = W_It(&VU1);
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitComputeVuMemOffset(is, 0);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	// Source is VI[it].US[0] zero-extended to 32 bits (interpreter stores the
+	// u16 then zeros the adjacent u16 — equivalent to a 32-bit zero-extended store).
+	armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+	if (xyzw & 8) armAsm->Str(w2, MemOperand(x1,  0));
+	if (xyzw & 4) armAsm->Str(w2, MemOperand(x1,  4));
+	if (xyzw & 2) armAsm->Str(w2, MemOperand(x1,  8));
+	if (xyzw & 1) armAsm->Str(w2, MemOperand(x1, 12));
+}
 #endif
 
 // ============================================================================
