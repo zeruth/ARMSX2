@@ -8,7 +8,7 @@
 #include "Common.h"
 #include "GS.h"
 #include "Memory.h"
-#include "VIF.h"
+#include "Vif.h"
 #include "VUmicro.h"
 #include "VUops.h"
 #include "arm64/AsmHelpers.h"

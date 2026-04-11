@@ -86,6 +86,29 @@ if(ANDROID)
 	)
 endif()
 
+# Desktop Linux executable
+if(NOT ANDROID AND UNIX AND NOT APPLE)
+	add_executable(armsx2
+		desktop/main.cpp
+	)
+	target_link_libraries(armsx2 PRIVATE
+		PCSX2
+		common
+		imgui
+		libzip::zip
+		SDL3::SDL3
+		simpleini
+	)
+	target_include_directories(armsx2 PRIVATE
+		"${CMAKE_SOURCE_DIR}"
+		"${CMAKE_SOURCE_DIR}/pcsx2"
+		"${CMAKE_SOURCE_DIR}/3rdparty/vixl/include"
+	)
+	target_compile_definitions(armsx2 PRIVATE
+		ARMSX2_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+	)
+endif()
+
 # Updater is Windows only for now.
 if (WIN32)
 	add_subdirectory(updater)

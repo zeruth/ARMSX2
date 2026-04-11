@@ -6,97 +6,102 @@ find_package(Git)
 # Require threads on all OSes.
 find_package(Threads REQUIRED)
 
+find_package(ZLIB REQUIRED)
+
+# --- Always-vendored deps (no system packages available or version too new) ---
+
+# zstd — builds libzstd_static, we alias to Zstd::Zstd
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/zstd EXCLUDE_FROM_ALL)
+if(NOT TARGET Zstd::Zstd)
+	add_library(Zstd::Zstd ALIAS libzstd_static)
+endif()
+
+# freetype — builds 'freetype' target, we alias to Freetype::Freetype
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/freetype EXCLUDE_FROM_ALL)
+if(NOT TARGET Freetype::Freetype)
+	add_library(Freetype::Freetype ALIAS freetype)
+endif()
+
+# plutovg — builds plutovg::plutovg alias natively
+add_subdirectory(3rdparty/plutovg EXCLUDE_FROM_ALL)
+
+# plutosvg — builds plutosvg::plutosvg alias natively, links plutovg
+add_subdirectory(3rdparty/plutosvg EXCLUDE_FROM_ALL)
+
+# SDL3
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST OFF CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/sdl3 EXCLUDE_FROM_ALL)
+if(NOT TARGET SDL3::SDL3)
+	add_library(SDL3::SDL3 ALIAS SDL3-static)
+endif()
+
+# libjpeg-turbo — builds jpeg-static, we alias to JPEG::JPEG
+set(ENABLE_SHARED OFF CACHE BOOL "" FORCE)
+set(ENABLE_STATIC ON CACHE BOOL "" FORCE)
+set(WITH_TURBOJPEG OFF CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/libjpeg-turbo EXCLUDE_FROM_ALL)
+# libjpeg-turbo doesn't set public include dirs; headers are in src/, config in build dir
+target_include_directories(jpeg-static PUBLIC
+	$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/3rdparty/libjpeg-turbo/src>
+	$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/3rdparty/libjpeg-turbo>
+)
+if(NOT TARGET JPEG::JPEG)
+	add_library(JPEG::JPEG ALIAS jpeg-static)
+endif()
+
+# libpng — builds png_static, we alias to PNG::PNG
+set(PNG_SHARED OFF CACHE BOOL "" FORCE)
+set(PNG_STATIC ON CACHE BOOL "" FORCE)
+set(PNG_TESTS OFF CACHE BOOL "" FORCE)
+set(PNG_TOOLS OFF CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/libpng EXCLUDE_FROM_ALL)
+if(NOT TARGET PNG::PNG)
+	add_library(PNG::PNG ALIAS png_static)
+endif()
+
+# libwebp — builds webp, we alias to WebP::libwebp
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/libwebp EXCLUDE_FROM_ALL)
+if(NOT TARGET WebP::libwebp)
+	add_library(WebP::libwebp ALIAS webp)
+endif()
+
+# lz4
+set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+add_subdirectory(3rdparty/lz4/build/cmake EXCLUDE_FROM_ALL)
+if(NOT TARGET LZ4::LZ4)
+	add_library(LZ4::LZ4 ALIAS lz4_static)
+endif()
+
+# --- Platform-specific deps ---
+
 if(ANDROID)
-	# Android: build vendored deps from source.
-	find_package(ZLIB REQUIRED) # NDK provides zlib
-
-	# zstd — builds libzstd_static, we alias to Zstd::Zstd
-	set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-	set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-	set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-	set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/zstd EXCLUDE_FROM_ALL)
-	if(NOT TARGET Zstd::Zstd)
-		add_library(Zstd::Zstd ALIAS libzstd_static)
-	endif()
-
-	# freetype — builds 'freetype' target, we alias to Freetype::Freetype
-	set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
-	set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
-	set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
-	set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
-	set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/freetype EXCLUDE_FROM_ALL)
-	if(NOT TARGET Freetype::Freetype)
-		add_library(Freetype::Freetype ALIAS freetype)
-	endif()
-
-	# plutovg — builds plutovg::plutovg alias natively
-	add_subdirectory(3rdparty/plutovg EXCLUDE_FROM_ALL)
-
-	# plutosvg — builds plutosvg::plutosvg alias natively, links plutovg
-	add_subdirectory(3rdparty/plutosvg EXCLUDE_FROM_ALL)
-
-	# SDL3
-	set(SDL_SHARED OFF CACHE BOOL "" FORCE)
-	set(SDL_STATIC ON CACHE BOOL "" FORCE)
-	set(SDL_TEST OFF CACHE BOOL "" FORCE)
+	# oboe — Android audio backend
 	add_subdirectory(3rdparty/oboe EXCLUDE_FROM_ALL)
-	add_subdirectory(3rdparty/sdl3 EXCLUDE_FROM_ALL)
-	if(NOT TARGET SDL3::SDL3)
-		add_library(SDL3::SDL3 ALIAS SDL3-static)
-	endif()
 
-	# libjpeg-turbo — builds jpeg-static, we alias to JPEG::JPEG
-	set(ENABLE_SHARED OFF CACHE BOOL "" FORCE)
-	set(ENABLE_STATIC ON CACHE BOOL "" FORCE)
-	set(WITH_TURBOJPEG OFF CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/libjpeg-turbo EXCLUDE_FROM_ALL)
-	# libjpeg-turbo doesn't set public include dirs; headers are in src/, config in build dir
-	target_include_directories(jpeg-static PUBLIC
-		$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/3rdparty/libjpeg-turbo/src>
-		$<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/3rdparty/libjpeg-turbo>
-	)
-	if(NOT TARGET JPEG::JPEG)
-		add_library(JPEG::JPEG ALIAS jpeg-static)
-	endif()
-
-	# libpng — builds png_static, we alias to PNG::PNG
-	set(PNG_SHARED OFF CACHE BOOL "" FORCE)
-	set(PNG_STATIC ON CACHE BOOL "" FORCE)
-	set(PNG_TESTS OFF CACHE BOOL "" FORCE)
-	set(PNG_TOOLS OFF CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/libpng EXCLUDE_FROM_ALL)
-	if(NOT TARGET PNG::PNG)
-		add_library(PNG::PNG ALIAS png_static)
-	endif()
-
-	# libwebp — builds webp, we alias to WebP::libwebp
-	set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
-	set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/libwebp EXCLUDE_FROM_ALL)
-	if(NOT TARGET WebP::libwebp)
-		add_library(WebP::libwebp ALIAS webp)
-	endif()
-
-	# lz4
-	set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
-	set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
-	set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-	set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
-	add_subdirectory(3rdparty/lz4/build/cmake EXCLUDE_FROM_ALL)
-	if(NOT TARGET LZ4::LZ4)
-		add_library(LZ4::LZ4 ALIAS lz4_static)
-	endif()
-
-	# shaderc — build from source as a static library
+	# shaderc — build from source as a static library on Android
 	if(USE_VULKAN)
 		set(SHADERC_SKIP_INSTALL ON CACHE BOOL "" FORCE)
 		set(SHADERC_SKIP_TESTS ON CACHE BOOL "" FORCE)
@@ -120,11 +125,49 @@ if(ANDROID)
 	endif()
 
 	set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
+elseif(UNIX AND NOT APPLE)
+	# Desktop Linux deps
+	find_package(CURL REQUIRED)
+	find_package(PCAP REQUIRED)
+
+	find_package(FFMPEG COMPONENTS avcodec avformat avutil swresample swscale)
+	if(NOT FFMPEG_FOUND)
+		message(WARNING "FFmpeg not found, using bundled headers.")
+		set(FFMPEG_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg/include")
+	endif()
+
+	include(CheckLib)
+
+	find_package(Fontconfig REQUIRED)
+	if(LINUX)
+		check_lib(LIBUDEV libudev libudev.h)
+	endif()
+
+	if(X11_API)
+		find_package(X11 REQUIRED)
+		if (NOT X11_Xrandr_FOUND)
+			message(FATAL_ERROR "XRandR extension is required")
+		endif()
+	endif()
+
+	if(WAYLAND_API)
+		find_package(ECM REQUIRED NO_MODULE)
+		list(APPEND CMAKE_MODULE_PATH "${ECM_MODULE_PATH}")
+		find_package(Wayland REQUIRED Egl)
+	endif()
+
+	if(USE_BACKTRACE)
+		find_package(Libbacktrace REQUIRED)
+	endif()
+
+	find_package(PkgConfig REQUIRED)
+	pkg_check_modules(DBUS REQUIRED dbus-1)
+
+	# shaderc: dynamically loaded at runtime (install libshaderc-dev)
 else()
-	# Desktop dependency libraries.
+	# Upstream desktop (Windows/macOS) — kept for reference, not used by ARMSX2
 	set(FIND_FRAMEWORK_BACKUP ${CMAKE_FIND_FRAMEWORK})
 	set(CMAKE_FIND_FRAMEWORK NEVER)
-	find_package(ZLIB REQUIRED)
 	find_package(Zstd 1.5.5 REQUIRED)
 	find_package(Freetype 2.12 REQUIRED)
 	find_package(plutovg 1.1.0 REQUIRED)

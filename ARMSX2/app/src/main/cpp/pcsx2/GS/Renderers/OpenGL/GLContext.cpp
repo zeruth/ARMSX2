@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/OpenGL/GLContext.h"
+#ifdef __ANDROID__
 #include "GS/Renderers/OpenGL/GLContextEGLAndroid.h"
+#endif
 
 #if defined(_WIN32)
 #include "GS/Renderers/OpenGL/GLContextWGL.h"
@@ -72,17 +74,21 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 	}
 
 	std::unique_ptr<GLContext> context;
+#ifdef __ANDROID__
 	if (wi.type == WindowInfo::Type::Android)
 		context = GLContextEGLAndroid::Create(wi, versions_to_try, num_versions_to_try);
+#endif
 #if defined(_WIN32)
-	else
-		context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
-#elif defined(X11_API)
-	else if (wi.type == WindowInfo::Type::X11)
+	context = GLContextWGL::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+#else
+#ifdef X11_API
+	if (wi.type == WindowInfo::Type::X11)
 		context = GLContextEGLX11::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
-#elif defined(WAYLAND_API)
-	else if (wi.type == WindowInfo::Type::Wayland)
+#endif
+#ifdef WAYLAND_API
+	if (!context && wi.type == WindowInfo::Type::Wayland)
 		context = GLContextEGLWayland::Create(wi, std::span<const Version>(versions_to_try, num_versions_to_try), error);
+#endif
 #endif
 
 	if (!context)

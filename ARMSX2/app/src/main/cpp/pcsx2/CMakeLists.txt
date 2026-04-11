@@ -836,8 +836,10 @@ set(pcsx2DebugToolsHeaders
 set(pcsx2HostSources
 	Host/AudioStream.cpp
 	Host/CubebAudioStream.cpp
-	Host/SDLAudioStream.cpp
-	Host/OboeAudioStream.cpp)
+	Host/SDLAudioStream.cpp)
+if(ANDROID)
+	list(APPEND pcsx2HostSources Host/OboeAudioStream.cpp)
+endif()
 
 set(pcsx2HostHeaders
 	Host/AudioStream.h
@@ -1270,21 +1272,14 @@ target_include_directories(PCSX2_FLAGS INTERFACE
 	"${CMAKE_BINARY_DIR}/common/include"
 	"${FFMPEG_INCLUDE_DIRS}"
 )
-if(ANDROID)
-	# Desktop #includes use "bin/resources/shaders/..." — on Android these live under assets/.
-	# Point an include dir so "bin/resources/..." resolves to the assets location.
-	get_filename_component(_ANDROID_BIN_PARENT "${CMAKE_SOURCE_DIR}/../../../../src/main/assets/resources/shaders/.." ABSOLUTE)
-	# _ANDROID_BIN_PARENT = .../assets/resources — we need parent of "bin", where bin/resources/shaders exists
-	# Include is "bin/resources/shaders/common/ffx_a.h" so we need dir D where D/bin/resources/shaders/common/ffx_a.h exists
-	# assets = .../app/src/main/assets, assets/resources/shaders/common/ffx_a.h exists
-	# So we need D/bin = assets, meaning D = assets/.. with bin renamed. Easiest: just copy the two headers.
-	set(_FFX_SRC "${CMAKE_SOURCE_DIR}/../assets/resources/shaders/common")
-	get_filename_component(_FFX_SRC "${_FFX_SRC}" ABSOLUTE)
-	set(_FFX_DST "${CMAKE_BINARY_DIR}/bin/resources/shaders/common")
-	file(MAKE_DIRECTORY "${_FFX_DST}")
-	file(COPY "${_FFX_SRC}/ffx_a.h" "${_FFX_SRC}/ffx_cas.h" DESTINATION "${_FFX_DST}")
-	target_include_directories(PCSX2_FLAGS INTERFACE "${CMAKE_BINARY_DIR}")
-endif()
+# Copy FFX shader headers so "bin/resources/shaders/..." #includes resolve.
+# On both Android and desktop ARMSX2, these live under assets/, not bin/.
+set(_FFX_SRC "${CMAKE_SOURCE_DIR}/../assets/resources/shaders/common")
+get_filename_component(_FFX_SRC "${_FFX_SRC}" ABSOLUTE)
+set(_FFX_DST "${CMAKE_BINARY_DIR}/bin/resources/shaders/common")
+file(MAKE_DIRECTORY "${_FFX_DST}")
+file(COPY "${_FFX_SRC}/ffx_a.h" "${_FFX_SRC}/ffx_cas.h" DESTINATION "${_FFX_DST}")
+target_include_directories(PCSX2_FLAGS INTERFACE "${CMAKE_BINARY_DIR}")
 
 set_source_files_properties(PrecompiledHeader.cpp PROPERTIES HEADER_FILE_ONLY TRUE)
 if(COMMAND target_precompile_headers)
