@@ -1541,76 +1541,203 @@ void recVU1_MFP() {
 //  Flag read/write
 // ============================================================================
 
+// Status flag imm: bit 21 -> bit 11, bits [10:0] as-is. Max value 0xFFF.
+static inline u32 decodeFSImm(u32 code)
+{
+	return (((code >> 21) & 0x1) << 11) | (code & 0x7ff);
+}
+
 #if ISTUB_VU_FSAND
 REC_VU1_LOWER_INTERP(FSAND)
 #else
-REC_VU1_LOWER_CALL(FSAND)
+void recVU1_FSAND() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 imm = decodeFSImm(VU1.code);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(REG_STATUS_FLAG)));
+	if (imm == 0)
+		armAsm->Mov(w0, 0);
+	else
+	{
+		armAsm->Mov(w1, imm);
+		armAsm->And(w0, w0, w1);
+	}
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FSEQ
 REC_VU1_LOWER_INTERP(FSEQ)
 #else
-REC_VU1_LOWER_CALL(FSEQ)
+void recVU1_FSEQ() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 imm = decodeFSImm(VU1.code);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(REG_STATUS_FLAG)));
+	armAsm->And(w0, w0, 0xFFF);
+	armAsm->Mov(w1, imm);
+	armAsm->Cmp(w0, w1);
+	armAsm->Cset(w0, a64::eq);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FSOR
 REC_VU1_LOWER_INTERP(FSOR)
 #else
-REC_VU1_LOWER_CALL(FSOR)
+void recVU1_FSOR() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 imm = decodeFSImm(VU1.code);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(REG_STATUS_FLAG)));
+	armAsm->And(w0, w0, 0xFFF);
+	if (imm != 0)
+	{
+		armAsm->Mov(w1, imm);
+		armAsm->Orr(w0, w0, w1);
+	}
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FSSET
 REC_VU1_LOWER_INTERP(FSSET)
 #else
-REC_VU1_LOWER_CALL(FSSET)
+void recVU1_FSSET() {
+	const u32 imm     = decodeFSImm(VU1.code);
+	const u32 top     = imm & 0xFC0;
+	const int64_t sf_off = static_cast<int64_t>(offsetof(VURegs, statusflag));
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, sf_off));
+	armAsm->And(w0, w0, 0x3F);
+	if (top != 0)
+	{
+		armAsm->Mov(w1, top);
+		armAsm->Orr(w0, w0, w1);
+	}
+	armAsm->Str(w0, MemOperand(VU1_BASE_REG, sf_off));
+}
 #endif
 
 #if ISTUB_VU_FMAND
 REC_VU1_LOWER_INTERP(FMAND)
 #else
-REC_VU1_LOWER_CALL(FMAND)
+void recVU1_FMAND() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 is = W_Is(&VU1);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(is)));
+	armAsm->Ldrh(w1, MemOperand(VU1_BASE_REG, viOff(REG_MAC_FLAG)));
+	armAsm->And(w0, w0, w1);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FMEQ
 REC_VU1_LOWER_INTERP(FMEQ)
 #else
-REC_VU1_LOWER_CALL(FMEQ)
+void recVU1_FMEQ() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 is = W_Is(&VU1);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(REG_MAC_FLAG)));
+	armAsm->Ldrh(w1, MemOperand(VU1_BASE_REG, viOff(is)));
+	armAsm->Cmp(w0, w1);
+	armAsm->Cset(w0, a64::eq);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FMOR
 REC_VU1_LOWER_INTERP(FMOR)
 #else
-REC_VU1_LOWER_CALL(FMOR)
+void recVU1_FMOR() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 is = W_Is(&VU1);
+	armAsm->Ldrh(w0, MemOperand(VU1_BASE_REG, viOff(REG_MAC_FLAG)));
+	armAsm->Ldrh(w1, MemOperand(VU1_BASE_REG, viOff(is)));
+	armAsm->Orr(w0, w0, w1);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 #if ISTUB_VU_FCAND
 REC_VU1_LOWER_INTERP(FCAND)
 #else
-REC_VU1_LOWER_CALL(FCAND)
+void recVU1_FCAND() {
+	const u32 imm = VU1.code & 0xFFFFFF;
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_CLIP_FLAG)));
+	if (imm == 0)
+		armAsm->Mov(w0, 0);
+	else
+	{
+		armAsm->Mov(w1, imm);
+		armAsm->Tst(w0, w1);
+		armAsm->Cset(w0, a64::ne);
+	}
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(1)));
+}
 #endif
 
 #if ISTUB_VU_FCEQ
 REC_VU1_LOWER_INTERP(FCEQ)
 #else
-REC_VU1_LOWER_CALL(FCEQ)
+void recVU1_FCEQ() {
+	const u32 imm = VU1.code & 0xFFFFFF;
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_CLIP_FLAG)));
+	armAsm->And(w0, w0, 0xFFFFFF);
+	armAsm->Mov(w1, imm);
+	armAsm->Cmp(w0, w1);
+	armAsm->Cset(w0, a64::eq);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(1)));
+}
 #endif
 
 #if ISTUB_VU_FCOR
 REC_VU1_LOWER_INTERP(FCOR)
 #else
-REC_VU1_LOWER_CALL(FCOR)
+void recVU1_FCOR() {
+	const u32 imm = VU1.code & 0xFFFFFF;
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_CLIP_FLAG)));
+	armAsm->And(w0, w0, 0xFFFFFF);
+	if (imm != 0)
+	{
+		armAsm->Mov(w1, imm);
+		armAsm->Orr(w0, w0, w1);
+	}
+	armAsm->Mov(w1, 0xFFFFFFu);
+	armAsm->Cmp(w0, w1);
+	armAsm->Cset(w0, a64::eq);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(1)));
+}
 #endif
 
 #if ISTUB_VU_FCSET
 REC_VU1_LOWER_INTERP(FCSET)
 #else
-REC_VU1_LOWER_CALL(FCSET)
+void recVU1_FCSET() {
+	const u32 imm = VU1.code & 0xFFFFFF;
+	const int64_t cf_off = static_cast<int64_t>(offsetof(VURegs, clipflag));
+	if (imm == 0)
+		armAsm->Str(wzr, MemOperand(VU1_BASE_REG, cf_off));
+	else
+	{
+		armAsm->Mov(w0, imm);
+		armAsm->Str(w0, MemOperand(VU1_BASE_REG, cf_off));
+	}
+}
 #endif
 
 #if ISTUB_VU_FCGET
 REC_VU1_LOWER_INTERP(FCGET)
 #else
-REC_VU1_LOWER_CALL(FCGET)
+void recVU1_FCGET() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	armAsm->Ldr(w0, MemOperand(VU1_BASE_REG, viOff(REG_CLIP_FLAG)));
+	armAsm->And(w0, w0, 0xFFF);
+	armAsm->Strh(w0, MemOperand(VU1_BASE_REG, viOff(it)));
+}
 #endif
 
 // ============================================================================
