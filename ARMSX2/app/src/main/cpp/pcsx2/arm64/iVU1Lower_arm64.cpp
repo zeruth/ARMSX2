@@ -854,12 +854,12 @@ void vu1_XGKICK_fire_deferred(VURegs* VU)
 		gifUnit.TransferGSPacketData(GIF_TRANS_XGKICK, &VU1.Mem[addr], size, true);
 	}
 
-	// Release VIF if it was waiting on the GIF, same as _vuXGKICKTransfer.
-	if (vif1Regs.stat.VGW)
-	{
-		vif1Regs.stat.VGW = false;
-		CPU_INT(DMAC_VIF1, 8);
-	}
+	// VGW release is handled by gifUnit.Execute on the EE thread (Gif_Unit.h:825).
+	// We intentionally do NOT touch vif1Regs.stat.VGW or CPU_INT here — under
+	// THREAD_VU1 this runs on the MTVU thread and any write to cpuRegs /
+	// vif1Regs from here is a cross-thread race. microVU's mVU_XGKICK_
+	// (microVU_Lower.inl:1698) takes the same approach: it never touches VGW,
+	// leaving that to the GIF arbitration loop on the EE thread.
 }
 
 // ============================================================================

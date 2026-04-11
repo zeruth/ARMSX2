@@ -1492,11 +1492,12 @@ namespace EmuFolders
 #define THREAD_VU1 (REC_VU1 && EmuConfig.Speedhacks.vuThread)
 #elif defined(__aarch64__) || defined(_M_ARM64)
 // arm64 has a native VU1 recompiler (iVU1micro_arm64.cpp) plus the
-// XGKICK cycle-delay port needed for GetGSPacketSize to walk a stable
-// VU1.Mem. MTVU (THREAD_VU1) is still not wired up on arm64 — the cross-
-// thread VU state plumbing hasn't been ported — so force-disable it.
+// XGKICK cycle-delay port that fires via gifUnit.TransferGSPacketData
+// directly (same as microVU's mVU_XGKICK_). TransferGSPacketData
+// internally routes XGKICK to the MTVU path when THREAD_VU1=true, so
+// MTVU works once we enable it here.
 #define REC_VU1 (EmuConfig.Cpu.Recompiler.EnableVU1)
-#define THREAD_VU1 false
+#define THREAD_VU1 (REC_VU1 && EmuConfig.Speedhacks.vuThread)
 #else
 #define THREAD_VU1 false
 #define REC_VU1 false

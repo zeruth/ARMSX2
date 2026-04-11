@@ -87,28 +87,65 @@ static u8* s_code_write = nullptr;
 static u8* s_code_end   = nullptr;
 static ArmConstantPool s_pool;
 
+// Set by vu1EbitDone when the ebit countdown reaches 0 (microprogram finished).
+// Under non-MTVU this is redundant with the VPU_STAT 0x100 clear, but under
+// THREAD_VU1 we can't touch VPU_STAT from the VU thread (cross-thread race
+// on EE state), so the dispatch loop uses this flag to break instead.
+// Reset at the top of recArmVU1::Execute. Single-writer, single-reader on
+// the same thread (VU thread under MTVU, EE thread otherwise).
+static bool s_vu1_program_ended = false;
+
 // ============================================================================
 //  Runtime helper functions called from compiled blocks
 // ============================================================================
 
-// Check D/T bits at runtime (depends on VU0 FBRST which is a runtime value).
+// Check D/T bits at runtime (depends on FBRST which is a runtime value).
+//
+// Under THREAD_VU1 this runs on the MTVU thread, so:
+//   1. Read vu1Thread.vuFBRST (EE-thread snapshot sent via ExecuteVU) rather
+//      than VU0.VI[REG_FBRST].UL (live EE-thread state — cross-thread race).
+//   2. Do NOT write VU0.VI[REG_VPU_STAT] or call hwIntcIrq() from the VU
+//      thread. Instead, atomically OR a flag into vu1Thread.mtvuInterrupts;
+//      Get_MTVUChanges() (MTVU.cpp:351) processes it on the EE thread after
+//      the MTVU execute completes, doing the VPU_STAT update and the IRQ
+//      raise there.
+// Mirrors x86 microVU's mVUTBit / mVUEBit + mVUDTendProgram path
+// (microVU_Misc.inl:272-282, microVU_Branch.inl:335-375).
+// D-bit under MTVU ends the program via InterruptFlagVUEBit (no IRQ) — same
+// as x86 microVU's D-bit path, which calls mVUDTendProgram → mVUEBit.
 static void vu1CheckDTBits(u32 upper)
 {
+	const u32 fbrst = THREAD_VU1 ? vu1Thread.vuFBRST : VU0.VI[REG_FBRST].UL;
+
 	if (upper & 0x10000000) // D flag
 	{
-		if (VU0.VI[REG_FBRST].UL & 0x400)
+		if (fbrst & 0x400)
 		{
-			VU0.VI[REG_VPU_STAT].UL |= 0x200;
-			hwIntcIrq(INTC_VU1);
+			if (THREAD_VU1)
+			{
+				vu1Thread.mtvuInterrupts.fetch_or(VU_Thread::InterruptFlagVUEBit, std::memory_order_release);
+			}
+			else
+			{
+				VU0.VI[REG_VPU_STAT].UL |= 0x200;
+				hwIntcIrq(INTC_VU1);
+			}
 			VU1.ebit = 1;
 		}
 	}
 	if (upper & 0x08000000) // T flag
 	{
-		if (VU0.VI[REG_FBRST].UL & 0x800)
+		if (fbrst & 0x800)
 		{
-			VU0.VI[REG_VPU_STAT].UL |= 0x400;
-			hwIntcIrq(INTC_VU1);
+			if (THREAD_VU1)
+			{
+				vu1Thread.mtvuInterrupts.fetch_or(VU_Thread::InterruptFlagVUTBit, std::memory_order_release);
+			}
+			else
+			{
+				VU0.VI[REG_VPU_STAT].UL |= 0x400;
+				hwIntcIrq(INTC_VU1);
+			}
 			VU1.ebit = 1;
 		}
 	}
@@ -125,8 +162,22 @@ static void vu1EbitDone(VURegs* VU)
 {
 	VU->VIBackupCycles = 0;
 	_vuFlushAll(VU);
-	VU0.VI[REG_VPU_STAT].UL &= ~0x100;
-	vif1Regs.stat.VEW = false;
+	// VPU_STAT running bit + VEW: under THREAD_VU1, vu1ExecMicro on the EE
+	// thread already cleared VPU_STAT (VU1micro.cpp:52) before queuing the
+	// MTVU execute, and VEW is owned by the VIF DMA path (Vif1_Dma.cpp:258).
+	// Writing them from here under MTVU is a cross-thread race on EE state.
+	// x86 microVU doesn't touch either at end-of-microprogram; we match that.
+	if (!THREAD_VU1)
+	{
+		VU0.VI[REG_VPU_STAT].UL &= ~0x100;
+		vif1Regs.stat.VEW = false;
+	}
+	// Signal the dispatch loop that the microprogram is finished. Under
+	// non-MTVU the VPU_STAT clear above also breaks the loop, but that
+	// gate is unreliable under THREAD_VU1 (VPU_STAT 0x100 is cleared on
+	// the EE side before queueing and, with INSTANT_VU1, is never re-set),
+	// so the loop uses this flag as its termination signal.
+	s_vu1_program_ended = true;
 	if (INSTANT_VU1)
 		VU1.xgkicklastcycle = cpuRegs.cycle;
 }
@@ -927,10 +978,23 @@ void recArmVU1::Execute(u32 cycles)
 
 	VU1.VI[REG_TPC].UL <<= 3;
 	const u64 startcycles = VU1.cycle;
+	s_vu1_program_ended = false;
 
 	while ((VU1.cycle - startcycles) < cycles)
 	{
-		if (!(VU0.VI[REG_VPU_STAT].UL & 0x100))
+		// Termination gate.
+		//   Non-MTVU: read VPU_STAT 0x100 live — external clears (FBRST reset
+		//     on the EE thread) stop us mid-execute, and vu1EbitDone's own
+		//     clear ends the program normally.
+		//   MTVU: VPU_STAT 0x100 is cleared by vu1ExecMicro before the queue
+		//     and never re-set under INSTANT_VU1, so we can't use it. Break
+		//     on s_vu1_program_ended (set by vu1EbitDone on the VU thread).
+		//     Matches x86 microVU.cpp:381-385 which skips the VPU_STAT gate
+		//     entirely under THREAD_VU1.
+		const bool stopped = THREAD_VU1
+			? s_vu1_program_ended
+			: !(VU0.VI[REG_VPU_STAT].UL & 0x100);
+		if (stopped)
 		{
 			if (VU1.branch == 1)
 			{

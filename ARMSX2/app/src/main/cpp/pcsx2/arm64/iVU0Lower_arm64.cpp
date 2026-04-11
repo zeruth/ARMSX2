@@ -12,6 +12,7 @@
 #include "Common.h"
 #include "VUops.h"
 #include "VU.h"
+#include "MTVU.h"
 #include "arm64/arm64Emitter.h"
 #include "arm64/AsmHelpers.h"
 #include <cmath>
@@ -272,12 +273,23 @@ static void vu0_RSQRT(VURegs* VU)
 static void vu0_WAITQ(VURegs* VU) { (void)VU; }
 static void vu0_WAITP(VURegs* VU) { (void)VU; }
 
+// Under THREAD_VU1, when VU0 helpers touch an address with bit 0x4000 set,
+// GET_VU_MEM aliases the pointer onto VU1.VF/VI (shared with the MTVU thread).
+// We must drain the MTVU ring before reading/writing, otherwise we race on
+// live VF/VI bytes. Mirrors microVU's mVUaddrFix → mVU.waitMTVU emission.
+static inline void vu0MTVUSyncVU1Reg(u32 addr)
+{
+	if (THREAD_VU1 && (addr & 0x4000))
+		vu1Thread.WaitVU();
+}
+
 // --- Load/Store wrappers ---
 static void vu0_LQ(VURegs* VU)
 {
 	if (W_Ft(VU) == 0) return;
 	vu_s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	vu_u16 addr = ((imm + VU->VI[W_Is(VU)].SS[0]) * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) VU->VF[W_Ft(VU)].UL[0] = ptr[0];
 	if (W_Y(VU)) VU->VF[W_Ft(VU)].UL[1] = ptr[1];
@@ -291,6 +303,7 @@ static void vu0_LQD(VURegs* VU)
 	if (W_Is(VU) != 0) VU->VI[W_Is(VU)].US[0]--;
 	if (W_Ft(VU) == 0) return;
 	u32 addr = (VU->VI[W_Is(VU)].US[0] * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) VU->VF[W_Ft(VU)].UL[0] = ptr[0];
 	if (W_Y(VU)) VU->VF[W_Ft(VU)].UL[1] = ptr[1];
@@ -304,6 +317,7 @@ static void vu0_LQI(VURegs* VU)
 	if (W_Ft(VU))
 	{
 		u32 addr = (VU->VI[W_Is(VU)].US[0] * 16);
+		vu0MTVUSyncVU1Reg(addr);
 		u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 		if (W_X(VU)) VU->VF[W_Ft(VU)].UL[0] = ptr[0];
 		if (W_Y(VU)) VU->VF[W_Ft(VU)].UL[1] = ptr[1];
@@ -317,6 +331,7 @@ static void vu0_SQ(VURegs* VU)
 {
 	vu_s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	vu_u16 addr = ((imm + VU->VI[W_It(VU)].SS[0]) * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) ptr[0] = VU->VF[W_Fs(VU)].UL[0];
 	if (W_Y(VU)) ptr[1] = VU->VF[W_Fs(VU)].UL[1];
@@ -329,6 +344,7 @@ static void vu0_SQD(VURegs* VU)
 	vu0BackupVI(VU, W_It(VU));
 	if (W_Ft(VU) != 0) VU->VI[W_It(VU)].US[0]--;
 	u32 addr = (VU->VI[W_It(VU)].US[0] * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) ptr[0] = VU->VF[W_Fs(VU)].UL[0];
 	if (W_Y(VU)) ptr[1] = VU->VF[W_Fs(VU)].UL[1];
@@ -340,6 +356,7 @@ static void vu0_SQI(VURegs* VU)
 {
 	vu0BackupVI(VU, W_It(VU));
 	u32 addr = (VU->VI[W_It(VU)].US[0] * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	u32* ptr = (u32*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) ptr[0] = VU->VF[W_Fs(VU)].UL[0];
 	if (W_Y(VU)) ptr[1] = VU->VF[W_Fs(VU)].UL[1];
@@ -353,6 +370,7 @@ static void vu0_ILW(VURegs* VU)
 	if (W_It(VU) == 0) return;
 	vu_s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	vu_u16 addr = ((imm + VU->VI[W_Is(VU)].SS[0]) * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	vu_u16* ptr = (vu_u16*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) VU->VI[W_It(VU)].US[0] = ptr[0];
 	if (W_Y(VU)) VU->VI[W_It(VU)].US[0] = ptr[2];
@@ -364,6 +382,7 @@ static void vu0_ISW(VURegs* VU)
 {
 	vu_s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	vu_u16 addr = ((imm + VU->VI[W_Is(VU)].SS[0]) * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	vu_u16* ptr = (vu_u16*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) { ptr[0] = VU->VI[W_It(VU)].US[0]; ptr[1] = 0; }
 	if (W_Y(VU)) { ptr[2] = VU->VI[W_It(VU)].US[0]; ptr[3] = 0; }
@@ -375,6 +394,7 @@ static void vu0_ILWR(VURegs* VU)
 {
 	if (W_It(VU) == 0) return;
 	u32 addr = (VU->VI[W_Is(VU)].US[0] * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	vu_u16* ptr = (vu_u16*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) VU->VI[W_It(VU)].US[0] = ptr[0];
 	if (W_Y(VU)) VU->VI[W_It(VU)].US[0] = ptr[2];
@@ -385,6 +405,7 @@ static void vu0_ILWR(VURegs* VU)
 static void vu0_ISWR(VURegs* VU)
 {
 	u32 addr = (VU->VI[W_Is(VU)].US[0] * 16);
+	vu0MTVUSyncVU1Reg(addr);
 	vu_u16* ptr = (vu_u16*)GET_VU_MEM(VU, addr);
 	if (W_X(VU)) { ptr[0] = VU->VI[W_It(VU)].US[0]; ptr[1] = 0; }
 	if (W_Y(VU)) { ptr[2] = VU->VI[W_It(VU)].US[0]; ptr[3] = 0; }
