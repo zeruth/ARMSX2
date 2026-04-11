@@ -2090,8 +2090,9 @@ void recVU1_RXOR() {
 //
 //  Native emitters for the non-transcendental ops (ESADD/ERSADD/ELENG/ERLENG/
 //  ESUM/ERCPR/ESQRT/ERSQRT). Each writes the running `VU->p` field; the 29-
-//  cycle EFU pipeline then moves that value into VI[REG_P] via vu1_EFUAdd →
-//  vu1_TestPipes_VU1's EFU flush, unchanged.
+//  cycle EFU pipeline then moves that value into VI[REG_P] via the inline
+//  EFU pipe add emitted by emitLowerNonFMACAdd and vu1_TestPipes_VU1's EFU
+//  flush, unchanged.
 //
 //  Inputs are vuDouble-clamped one lane at a time (matches _vuESADD et al. in
 //  VUops.cpp). Outputs are NOT clamped — none of these ops wrap the result in
