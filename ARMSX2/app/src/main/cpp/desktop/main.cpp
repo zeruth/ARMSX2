@@ -50,6 +50,16 @@ static std::deque<std::function<void()>> s_cpu_thread_queue;
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
 {
+	if (!s_window)
+	{
+		WindowInfo wi = {};
+		wi.type = WindowInfo::Type::Surfaceless;
+		wi.surface_width = 640;
+		wi.surface_height = 448;
+		wi.surface_scale = 1.0f;
+		return wi;
+	}
+
 	WindowInfo wi = {};
 	wi.surface_width = s_window_width;
 	wi.surface_height = s_window_height;
@@ -359,6 +369,7 @@ void Host::OnCaptureStopped()
 
 void Host::RequestExitApplication(bool allow_confirm)
 {
+	s_running = false;
 }
 
 void Host::RequestExitBigPicture()
@@ -544,7 +555,15 @@ std::string Host::TranslatePluralToString(const char* context, const char* msg, 
 
 static void print_usage(const char* argv0)
 {
-	std::fprintf(stderr, "Usage: %s [--app-root DIR] [--data-root DIR] <iso-path>\n", argv0);
+	std::fprintf(stderr,
+		"Usage: %s [options] [iso-path]\n"
+		"  --app-root DIR   Assets directory\n"
+		"  --data-root DIR  Config/data directory (also used as cfgpath)\n"
+		"  --elf FILE       Boot an ELF directly (no disc required)\n"
+		"  --logfile FILE   Force log output to FILE\n"
+		"  --headless       No window (for automated testing)\n"
+		"  --interp         Force all interpreters (EE/IOP/VU)\n",
+		argv0);
 }
 
 int main(int argc, char* argv[])
@@ -552,6 +571,10 @@ int main(int argc, char* argv[])
 	std::string iso_path;
 	std::string app_root;
 	std::string data_root;
+	std::string elf_path;
+	std::string logfile;
+	bool headless = false;
+	bool use_interp = false;
 
 	// Parse arguments
 	for (int i = 1; i < argc; i++)
@@ -560,6 +583,14 @@ int main(int argc, char* argv[])
 			app_root = argv[++i];
 		else if (std::strcmp(argv[i], "--data-root") == 0 && i + 1 < argc)
 			data_root = argv[++i];
+		else if (std::strcmp(argv[i], "--elf") == 0 && i + 1 < argc)
+			elf_path = argv[++i];
+		else if (std::strcmp(argv[i], "--logfile") == 0 && i + 1 < argc)
+			logfile = argv[++i];
+		else if (std::strcmp(argv[i], "--headless") == 0)
+			headless = true;
+		else if (std::strcmp(argv[i], "--interp") == 0)
+			use_interp = true;
 		else if (argv[i][0] != '-')
 			iso_path = argv[i];
 		else
@@ -569,7 +600,7 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	if (iso_path.empty())
+	if (iso_path.empty() && elf_path.empty())
 	{
 		print_usage(argv[0]);
 		return 1;
@@ -663,25 +694,47 @@ int main(int argc, char* argv[])
 		s_settings_interface->Load();
 	}
 
+	if (!logfile.empty())
+		VMManager::Internal::SetFileLogPath(logfile);
+
+	if (headless || !elf_path.empty())
+	{
+		// Enable EE/IOP console output for test harnesses
+		s_settings_interface->SetBoolValue("Logging", "EnableEEConsole", true);
+		s_settings_interface->SetBoolValue("Logging", "EnableIOPConsole", true);
+		s_settings_interface->SetBoolValue("Logging", "EnableFileLogging", true);
+	}
+
+	if (use_interp)
+	{
+		s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", false);
+		s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", false);
+		s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", false);
+		s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", false);
+	}
+
 	VMManager::Internal::LoadStartupSettings();
 
 	// SDL init
-	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
+	if (!SDL_Init(headless ? SDL_INIT_AUDIO : (SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)))
 	{
 		std::fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
 		return 1;
 	}
 
-	s_window = SDL_CreateWindow("ARMSX2", s_window_width, s_window_height, SDL_WINDOW_RESIZABLE);
-	if (!s_window)
+	if (!headless)
 	{
-		std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
-		SDL_Quit();
-		return 1;
-	}
+		s_window = SDL_CreateWindow("ARMSX2", s_window_width, s_window_height, SDL_WINDOW_RESIZABLE);
+		if (!s_window)
+		{
+			std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+			SDL_Quit();
+			return 1;
+		}
 
-	if (s_settings_interface->GetBoolValue("UI", "Fullscreen", false))
-		SDL_SetWindowFullscreen(s_window, true);
+		if (s_settings_interface->GetBoolValue("UI", "Fullscreen", false))
+			SDL_SetWindowFullscreen(s_window, true);
+	}
 
 	// CPU thread init
 	if (!VMManager::Internal::CPUThreadInitialize())
@@ -697,10 +750,19 @@ int main(int argc, char* argv[])
 	GSDumpReplayer::SetIsDumpRunner(false);
 
 	VMBootParameters boot_params;
-	boot_params.filename = iso_path;
-	boot_params.fast_boot = !iso_path.empty();
+	if (!elf_path.empty())
+	{
+		boot_params.filename = elf_path;
+		// Must go through BIOS to initialize Deci2 handler for EE console output
+		boot_params.fast_boot = false;
+	}
+	else
+	{
+		boot_params.filename = iso_path;
+		boot_params.fast_boot = !iso_path.empty();
+	}
 
-	Console.Error("Loading %s", iso_path.c_str());
+	Console.Error("Loading %s", boot_params.filename.c_str());
 
 	if (VMManager::Initialize(boot_params, nullptr) == VMBootResult::StartupSuccess)
 	{
@@ -732,8 +794,11 @@ int main(int argc, char* argv[])
 
 	VMManager::Internal::CPUThreadShutdown();
 
-	SDL_DestroyWindow(s_window);
-	s_window = nullptr;
+	if (s_window)
+	{
+		SDL_DestroyWindow(s_window);
+		s_window = nullptr;
+	}
 	SDL_Quit();
 
 	return 0;
