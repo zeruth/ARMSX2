@@ -1318,10 +1318,56 @@ void recVU1_IOR() {
 //  Load / Store (VU data memory)
 // ============================================================================
 
+// Decode the 10-bit signed immediate used by LQ/SQ/ILW/ISW.
+static inline s32 decodeVuImm10(u32 code)
+{
+	return (code & 0x400) ? static_cast<s32>((code & 0x3ff) | 0xfffffc00u)
+	                      : static_cast<s32>(code & 0x3ff);
+}
+
+// Compute the effective VU1.Mem byte offset for (VI[is_reg] + imm) * 16,
+// masked to 14 bits with 16-byte alignment (matches u16 cast + & 0x3FFF).
+// Result: w0 = 14-bit masked offset (and x0 holds the zero-extended version).
+// Clobbers w0.
+static void emitComputeVuMemOffset(u32 is_reg, s32 imm)
+{
+	armAsm->Ldrsh(w0, MemOperand(VU1_BASE_REG, viOff(is_reg)));
+	if (imm > 0)
+		armAsm->Add(w0, w0, imm);
+	else if (imm < 0)
+		armAsm->Sub(w0, w0, static_cast<u32>(-imm));
+	armAsm->Lsl(w0, w0, 4);
+	armAsm->And(w0, w0, 0x3FF0);
+}
+
 #if ISTUB_VU_LQ
 REC_VU1_LOWER_INTERP(LQ)
 #else
-REC_VU1_LOWER_CALL(LQ)
+void recVU1_LQ() {
+	const u32 ft = W_Ft(&VU1);
+	if (ft == 0) return;
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const s32 imm = decodeVuImm10(VU1.code);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitComputeVuMemOffset(is, imm);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0); // x0 is zero-extended from And
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Ldr(q0, MemOperand(x1));
+		armAsm->Str(q0, MemOperand(VU1_BASE_REG, vfOff(ft)));
+	}
+	else
+	{
+		if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(x1,  0)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  0)); }
+		if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(x1,  4)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  4)); }
+		if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(x1,  8)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) +  8)); }
+		if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(x1, 12)); armAsm->Str(w2, MemOperand(VU1_BASE_REG, vfOff(ft) + 12)); }
+	}
+}
 #endif
 
 #if ISTUB_VU_LQD
@@ -1339,7 +1385,30 @@ REC_VU1_LOWER_CALL(LQI)
 #if ISTUB_VU_SQ
 REC_VU1_LOWER_INTERP(SQ)
 #else
-REC_VU1_LOWER_CALL(SQ)
+void recVU1_SQ() {
+	const u32 fs = W_Fs(&VU1);
+	const u32 it = W_It(&VU1); // SQ uses It as the base register
+	const u32 xyzw = W_XYZW(&VU1);
+	const s32 imm = decodeVuImm10(VU1.code);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitComputeVuMemOffset(it, imm);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	if (xyzw == 0xF)
+	{
+		armAsm->Ldr(q0, MemOperand(VU1_BASE_REG, vfOff(fs)));
+		armAsm->Str(q0, MemOperand(x1));
+	}
+	else
+	{
+		if (xyzw & 8) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  0)); armAsm->Str(w2, MemOperand(x1,  0)); }
+		if (xyzw & 4) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  4)); armAsm->Str(w2, MemOperand(x1,  4)); }
+		if (xyzw & 2) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) +  8)); armAsm->Str(w2, MemOperand(x1,  8)); }
+		if (xyzw & 1) { armAsm->Ldr(w2, MemOperand(VU1_BASE_REG, vfOff(fs) + 12)); armAsm->Str(w2, MemOperand(x1, 12)); }
+	}
+}
 #endif
 
 #if ISTUB_VU_SQD
@@ -1357,13 +1426,49 @@ REC_VU1_LOWER_CALL(SQI)
 #if ISTUB_VU_ILW
 REC_VU1_LOWER_INTERP(ILW)
 #else
-REC_VU1_LOWER_CALL(ILW)
+void recVU1_ILW() {
+	const u32 it = W_It(&VU1);
+	if (it == 0) return;
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const s32 imm = decodeVuImm10(VU1.code);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitComputeVuMemOffset(is, imm);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	// ptr is u16*: ptr[0]/ptr[2]/ptr[4]/ptr[6] = byte offsets 0/4/8/12.
+	// Only the final set bit's value survives — match by emitting in order.
+	if (xyzw & 8) { armAsm->Ldrh(w2, MemOperand(x1,  0)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 4) { armAsm->Ldrh(w2, MemOperand(x1,  4)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 2) { armAsm->Ldrh(w2, MemOperand(x1,  8)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+	if (xyzw & 1) { armAsm->Ldrh(w2, MemOperand(x1, 12)); armAsm->Strh(w2, MemOperand(VU1_BASE_REG, viOff(it))); }
+}
 #endif
 
 #if ISTUB_VU_ISW
 REC_VU1_LOWER_INTERP(ISW)
 #else
-REC_VU1_LOWER_CALL(ISW)
+void recVU1_ISW() {
+	const u32 it = W_It(&VU1);
+	const u32 is = W_Is(&VU1);
+	const u32 xyzw = W_XYZW(&VU1);
+	const s32 imm = decodeVuImm10(VU1.code);
+	const int64_t mem_off = static_cast<int64_t>(offsetof(VURegs, Mem));
+
+	emitComputeVuMemOffset(is, imm);
+	armAsm->Ldr(x1, MemOperand(VU1_BASE_REG, mem_off));
+	armAsm->Add(x1, x1, x0);
+
+	// Source is VI[it].US[0] zero-extended; wrapper stores the u16 then zeros
+	// the next u16, which equals a 32-bit store of the zero-extended value.
+	armAsm->Ldrh(w2, MemOperand(VU1_BASE_REG, viOff(it)));
+	if (xyzw & 8) armAsm->Str(w2, MemOperand(x1,  0));
+	if (xyzw & 4) armAsm->Str(w2, MemOperand(x1,  4));
+	if (xyzw & 2) armAsm->Str(w2, MemOperand(x1,  8));
+	if (xyzw & 1) armAsm->Str(w2, MemOperand(x1, 12));
+}
 #endif
 
 #if ISTUB_VU_ILWR
