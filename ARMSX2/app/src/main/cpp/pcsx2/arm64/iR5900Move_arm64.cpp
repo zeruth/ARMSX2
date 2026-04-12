@@ -343,7 +343,8 @@ void recMTSA()
 		return;
 	}
 	auto rs = armGprAlloc(_Rs_, false);
-	armAsm->Str(rs.W(), a64::MemOperand(RCPUSTATE, SA_OFFSET));
+	armAsm->And(RWSCRATCH, rs.W(), 0xF);
+	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, SA_OFFSET));
 }
 #endif
 
