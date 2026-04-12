@@ -160,21 +160,24 @@ void recCFC1()
 		return;
 
 	armDelConstReg(_Rt_);
-	if (_Fs_cop1_ == 31)
+	// PS2 EE FPU control register read behavior:
+	// FCR0-15: all return FCR0 value (0x2E30 = implementation/revision)
+	// FCR16-31: all mirror FCR31, masked and with forced bits
+	if (_Fs_cop1_ >= 16)
 	{
+		// Load FCR31, apply read mask, set forced bits
+		constexpr u32 FCR31_READ_MASK = 0x0083C078;
+		constexpr u32 FCR31_FORCED_BITS = 0x01000001;
 		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
+		armAsm->And(RWSCRATCH, RWSCRATCH, FCR31_READ_MASK);
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, FCR31_FORCED_BITS);
 		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
-	}
-	else if (_Fs_cop1_ == 0)
-	{
-		// FCR0 = revision register, always 0x2E00
-		armAsm->Mov(RSCRATCHGPR, (u64)0x2E00);
-		armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
 	}
 	else
 	{
-		// All other control registers read as 0
-		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
+		// FCR0-15 all return fprc[0] (implementation/revision register)
+		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(0)));
+		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
 	}
 }
 #endif
@@ -192,6 +195,7 @@ void recCTC1()
 	if (_Fs_cop1_ != 31)
 		return;
 
+	// Store raw value; masking happens on read (CFC1)
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 }
