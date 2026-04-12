@@ -360,7 +360,7 @@ void SQRT_S() {
 	clearFPUFlags(FPUflagI | FPUflagD);
 
 	if ( ( _FtValUl_ & 0x7F800000 ) == 0 ) // If Ft = +/-0
-		_FdValUl_ = _FtValUl_ & 0x80000000;// result is 0
+		_FdValUl_ = 0; // result is always +0
 	else if ( _FtValUl_ & 0x80000000 ) { // If Ft is Negative
 		_ContVal_ |= FPUflagI | FPUflagSI;
 		_FdValf_ = sqrt( fabs( fpuDouble( _FtValUl_ ) ) );
