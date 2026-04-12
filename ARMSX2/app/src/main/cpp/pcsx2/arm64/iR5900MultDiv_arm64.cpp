@@ -275,9 +275,10 @@ static void emitSignedDivBody(s64 hilo_off)
 	armAsm->Bind(&divzero);
 	// LO = (rs < 0) ? 1 : -1   (sign-extended to 64)
 	// HI = sign_extend(rs)
-	armAsm->Mov(RWSCRATCH3, static_cast<u64>(1));
-	armAsm->Cmp(RWSCRATCH, 0);
-	armAsm->Cneg(RWSCRATCH3, RWSCRATCH3, a64::lt);                      // lt → +1, ge → -1
+	armAsm->Mov(RWSCRATCH3, 1);                                         // w6 = 1
+	armAsm->Mov(RWARG1, -1);                                            // w0 = -1
+	armAsm->Cmp(RWSCRATCH, 0);                                          // compare rs with 0
+	armAsm->Csel(RWSCRATCH3, RWSCRATCH3, RWARG1, a64::lt);              // w6 = lt ? 1 : -1
 	armAsm->Sxtw(RSCRATCHGPR3, RWSCRATCH3);
 	armAsm->Sxtw(RSCRATCHGPR, RWSCRATCH);                               // sign-ext rs
 	armAsm->Str(RSCRATCHGPR3, a64::MemOperand(RCPUSTATE, LO_OFFSET + hilo_off));

@@ -20,6 +20,8 @@
 #include "arm64/AsmHelpers.h"
 #include "x86/BaseblockEx.h"
 
+#include "arm64/TraceBlocks.h"
+
 // EEINST: per-instruction info used by the recompiler for register liveness analysis.
 // This mirrors the definition in x86/iCore.h but avoids dragging in x86 register allocator deps.
 struct EEINST
@@ -1225,6 +1227,13 @@ StartRecomp:
 	g_cpuFlushedPC = false;
 	g_cpuFlushedCode = false;
 	armGprCacheReset();
+
+#ifdef TRACE_BLOCKS
+	armEmitFlushCycleBeforeCall();
+	armAsm->Mov(RWARG1, startpc);
+	armEmitCall((void*)eeTraceBlock);
+	armEmitReloadCycleAfterCall();
+#endif
 
 	while (!g_branch && pc < s_nEndBlock)
 	{

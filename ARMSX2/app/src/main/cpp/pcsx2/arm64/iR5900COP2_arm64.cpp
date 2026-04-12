@@ -19,7 +19,7 @@
 #include "arm64/arm64Emitter.h"
 #include "VUmicro.h"
 #include "VU.h"
-#include "x86/iCore.h" // EEINST, EEINST_COP2_SYNC_VU0, EEINST_COP2_FINISH_VU0, g_pCurInstInfo
+#include "iRecAnalysis.h" // EEINST, EEINST_COP2_SYNC_VU0, EEINST_COP2_FINISH_VU0, g_pCurInstInfo
 
 using namespace R5900;
 

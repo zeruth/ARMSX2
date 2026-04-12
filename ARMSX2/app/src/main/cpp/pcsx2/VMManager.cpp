@@ -61,7 +61,6 @@
 #include "common/StringUtil.h"
 #include "common/Threading.h"
 #include "common/Timer.h"
-#include "common/emitter/x86emitter.h"
 
 #include "IconsFontAwesome.h"
 #include "IconsPromptFont.h"
@@ -2736,24 +2735,10 @@ void VMManager::UpdateCPUImplementations()
 	CpuVU0 = EmuConfig.Cpu.Recompiler.EnableVU0 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU0) : static_cast<BaseVUmicroCPU*>(&CpuIntVU0);
 	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuMicroVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
 #elif defined(__aarch64__) || defined(_M_ARM64)
-	// ARM64 EE recompiler with interpreter fallback stubs for unimplemented ops.
-	Cpu = &recCpu;
-#ifdef INTERP_IOP
-	psxCpu = &psxInt;
-#else
-	psxCpu = &psxRec;
-#endif
-
-#ifdef INTERP_VU0
-	CpuVU0 = &CpuIntVU0;
-#else
-	CpuVU0 = static_cast<BaseVUmicroCPU*>(&CpuArmVU0);
-#endif
-#ifdef INTERP_VU1
-	CpuVU1 = static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
-#else
-	CpuVU1 = static_cast<BaseVUmicroCPU*>(&CpuArmVU1);
-#endif
+	Cpu = CHECK_EEREC ? &recCpu : &intCpu;
+	psxCpu = CHECK_IOPREC ? &psxRec : &psxInt;
+	CpuVU0 = EmuConfig.Cpu.Recompiler.EnableVU0 ? static_cast<BaseVUmicroCPU*>(&CpuArmVU0) : static_cast<BaseVUmicroCPU*>(&CpuIntVU0);
+	CpuVU1 = EmuConfig.Cpu.Recompiler.EnableVU1 ? static_cast<BaseVUmicroCPU*>(&CpuArmVU1) : static_cast<BaseVUmicroCPU*>(&CpuIntVU1);
 #else
 	Cpu = &intCpu;
 	psxCpu = &psxInt;

@@ -17,7 +17,7 @@
 #include "IopMem.h"
 #include "IopGte.h"
 #include "IopDma.h"
-#include "x86/iCore.h" // EEINST, _recClearInst, _recFillRegister, g_pCurInstInfo
+#include "iRecAnalysis.h" // EEINST, _recClearInst, _recFillRegister, g_pCurInstInfo
 
 #include "common/Console.h"
 
