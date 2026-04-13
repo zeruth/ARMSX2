@@ -798,11 +798,23 @@ void recDMACInterrupt_VIF0()
 
 		if (vif0Regs.stat.test(VIF0_STAT_VSS | VIF0_STAT_VIS | VIF0_STAT_VFS))
 		{
-			vif0Regs.stat.FQC = std::min((u32)0x8, vif0ch.qwc);
 			if (vif0ch.qwc > 0 || !vif0.done)
 			{
+				// DMA not complete - stall and wait for more data
+				vif0Regs.stat.FQC = std::min((u32)0x8, vif0ch.qwc);
 				vif0Regs.stat.VPS = VPS_DECODING;
 				CPU_SET_DMASTALL(DMAC_VIF0, true);
+				return;
+			}
+			else
+			{
+				// DMA complete but VIF is stalled on IRQ.
+				// On real PS2, DMA completes (STR cleared) while VIF stays stalled.
+				vif0Regs.stat.FQC = 0;
+				vif0Regs.stat.VPS = VPS_DECODING;
+				vif0ch.chcr.STR = false;
+				hwDmacIrq(DMAC_VIF0);
+				CPU_SET_DMASTALL(DMAC_VIF0, false);
 				return;
 			}
 		}
@@ -927,11 +939,23 @@ void recDMACInterrupt_VIF1()
 
 		if (vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
 		{
-			vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
 			if ((vif1ch.qwc > 0 || !vif1.done) && !CHECK_VIF1STALLHACK)
 			{
+				// DMA not complete - stall and wait for more data
+				vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
 				vif1Regs.stat.VPS = VPS_DECODING;
 				CPU_SET_DMASTALL(DMAC_VIF1, true);
+				return;
+			}
+			else
+			{
+				// DMA complete but VIF is stalled on IRQ.
+				// On real PS2, DMA completes (STR cleared) while VIF stays stalled.
+				vif1Regs.stat.FQC = 0;
+				vif1Regs.stat.VPS = VPS_DECODING;
+				vif1ch.chcr.STR = false;
+				hwDmacIrq(DMAC_VIF1);
+				CPU_SET_DMASTALL(DMAC_VIF1, false);
 				return;
 			}
 		}

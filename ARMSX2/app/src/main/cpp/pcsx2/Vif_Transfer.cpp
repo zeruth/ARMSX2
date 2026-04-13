@@ -82,10 +82,16 @@ _vifT static __fi bool vifTransfer(u32 *data, int size, bool TTE) {
 
 	if (!TTE) // *WARNING* - Tags CAN have interrupts! so lets just ignore the dma modifying stuffs (GT4)
 	{
-		transferred  = transferred >> 2;
-		transferred = std::min((int)vifXch.qwc, transferred);
-		vifXch.madr +=(transferred << 4);
-		vifXch.qwc  -= transferred;
+		// When VIF stalls on IRQ, DMA still completes fully on real PS2.
+		// The data is considered transferred to VIF (FIFO drained), even though
+		// VIF hasn't processed all commands yet.
+		const bool irqStall = (vifX.vifstalled.enabled && vifX.vifstalled.value == VIF_IRQ_STALL);
+		int dmaTransferred = irqStall ? size : transferred;
+
+		dmaTransferred  = dmaTransferred >> 2;
+		dmaTransferred = std::min((int)vifXch.qwc, dmaTransferred);
+		vifXch.madr +=(dmaTransferred << 4);
+		vifXch.qwc  -= dmaTransferred;
 
 		hwDmacSrcTadrInc(vifXch);
 
