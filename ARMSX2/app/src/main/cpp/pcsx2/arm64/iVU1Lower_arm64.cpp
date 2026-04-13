@@ -425,18 +425,22 @@ static void vu1_RXOR(VURegs* VU)
 //     ERCPR/ESQRT/ERSQRT are native; see recVU1_ESADD et al. below). ---
 static void vu1_EATANxy(VURegs* VU)
 {
-	float p = 0;
-	if (vu1Double(VU->VF[W_Fs(VU)].i.x) != 0)
-		p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].i.y) / vu1Double(VU->VF[W_Fs(VU)].i.x));
+	float x = vu1Double(VU->VF[W_Fs(VU)].i.x);
+	float y = vu1Double(VU->VF[W_Fs(VU)].i.y);
+	// Transform: t = (y-x)/(x+y), then atan(t) + pi/4 = atan(y/x)
+	float t = (y - x) / (x + y);
+	float p = vu1CalculateEATAN(t);
 	VU->p.F = p;
 	VU->VI[REG_P].UL = *(u32*)&p;
 }
 
 static void vu1_EATANxz(VURegs* VU)
 {
-	float p = 0;
-	if (vu1Double(VU->VF[W_Fs(VU)].i.x) != 0)
-		p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].i.z) / vu1Double(VU->VF[W_Fs(VU)].i.x));
+	float x = vu1Double(VU->VF[W_Fs(VU)].i.x);
+	float z = vu1Double(VU->VF[W_Fs(VU)].i.z);
+	// Transform: t = (z-x)/(x+z), then atan(t) + pi/4 = atan(z/x)
+	float t = (z - x) / (x + z);
+	float p = vu1CalculateEATAN(t);
 	VU->p.F = p;
 	VU->VI[REG_P].UL = *(u32*)&p;
 }
@@ -453,7 +457,10 @@ static void vu1_ESIN(VURegs* VU)
 
 static void vu1_EATAN(VURegs* VU)
 {
-	float p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]));
+	float x = vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]);
+	// Transform: t = (x-1)/(x+1), then atan(t) + pi/4 = atan(x)
+	float t = (x - 1.0f) / (x + 1.0f);
+	float p = vu1CalculateEATAN(t);
 	VU->p.F = p;
 	VU->VI[REG_P].UL = *(u32*)&p;
 }
