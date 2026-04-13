@@ -135,7 +135,7 @@ __fi void vif0FBRST(u32 value)
 		vif0.done = true;
 		vif0ch.chcr.STR = false;
 		vif0Regs.err.reset();
-		vif0Regs.stat.clear_flags(VIF0_STAT_FQC | VIF0_STAT_INT | VIF0_STAT_VSS | VIF0_STAT_VIS | VIF0_STAT_VFS | VIF0_STAT_VPS); // FQC=0
+		vif0Regs.stat.clear_flags(VIF0_STAT_FQC | VIF0_STAT_INT | VIF0_STAT_VSS | VIF0_STAT_VIS | VIF0_STAT_VFS | VIF0_STAT_VPS | VIF0_STAT_MRK); // FQC=0
 	}
 }
 
