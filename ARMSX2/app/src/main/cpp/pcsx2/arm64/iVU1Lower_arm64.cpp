@@ -429,6 +429,7 @@ static void vu1_EATANxy(VURegs* VU)
 	if (vu1Double(VU->VF[W_Fs(VU)].i.x) != 0)
 		p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].i.y) / vu1Double(VU->VF[W_Fs(VU)].i.x));
 	VU->p.F = p;
+	VU->VI[REG_P].UL = *(u32*)&p;
 }
 
 static void vu1_EATANxz(VURegs* VU)
@@ -437,6 +438,7 @@ static void vu1_EATANxz(VURegs* VU)
 	if (vu1Double(VU->VF[W_Fs(VU)].i.x) != 0)
 		p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].i.z) / vu1Double(VU->VF[W_Fs(VU)].i.x));
 	VU->p.F = p;
+	VU->VI[REG_P].UL = *(u32*)&p;
 }
 
 static void vu1_ESIN(VURegs* VU)
@@ -446,12 +448,14 @@ static void vu1_ESIN(VURegs* VU)
 	p = (sinconsts[0] * p) + (sinconsts[1] * pow(p, 3)) + (sinconsts[2] * pow(p, 5))
 		+ (sinconsts[3] * pow(p, 7)) + (sinconsts[4] * pow(p, 9));
 	VU->p.F = vu1Double(*(u32*)&p);
+	VU->VI[REG_P].UL = VU->p.UL;
 }
 
 static void vu1_EATAN(VURegs* VU)
 {
 	float p = vu1CalculateEATAN(vu1Double(VU->VF[W_Fs(VU)].UL[W_Fsf(VU)]));
 	VU->p.F = p;
+	VU->VI[REG_P].UL = *(u32*)&p;
 }
 
 static void vu1_EEXP(VURegs* VU)
@@ -465,6 +469,7 @@ static void vu1_EEXP(VURegs* VU)
 	p = vu1Double(*(u32*)&p);
 	p = 1 / p;
 	VU->p.F = p;
+	VU->VI[REG_P].UL = *(u32*)&p;
 }
 
 // --- Special wrappers ---
@@ -2125,12 +2130,13 @@ static void emitEFUSumSquaresXYZ(u32 fs)
 	armAsm->Fadd(s0, s0, s2);
 }
 
-// Helper: store s0 → VU->p (as raw bits). Clobbers w0.
+// Helper: store s0 → VU->p and VI[REG_P] (as raw bits). Clobbers w0.
 static void emitEFUStoreP()
 {
 	const int64_t p_off = static_cast<int64_t>(offsetof(VURegs, p));
 	armAsm->Fmov(w0, s0);
 	armAsm->Str(w0, MemOperand(VU1_BASE_REG, p_off));
+	armAsm->Str(w0, MemOperand(VU1_BASE_REG, viOff(REG_P)));
 }
 
 #if ISTUB_VU_ESADD
