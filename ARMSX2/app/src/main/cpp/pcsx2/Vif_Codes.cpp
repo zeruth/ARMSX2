@@ -300,6 +300,16 @@ vifOp(vifCode_Mark)
 	{
 		vifXRegs.mark = static_cast<u16>(vifXRegs.code);
 		vifXRegs.stat.MRK = true;
+
+		// MARK with I bit doesn't stall VIF - it triggers interrupt immediately
+		// and continues processing. Clear irq so loop doesn't break on next command.
+		if (vifX.irq)
+		{
+			vifXRegs.stat.INT = true;
+			hwIntcIrq(idx ? VIF1intc : VIF0intc);
+			vifX.irq = 0;
+		}
+
 		vifX.cmd = 0;
 		vifX.pass = 0;
 	}
