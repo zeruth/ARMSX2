@@ -17,6 +17,7 @@
 #include "IopMem.h"
 #include "IopGte.h"
 #include "IopDma.h"
+#include "IopBios.h"
 #include "iRecAnalysis.h" // EEINST, _recClearInst, _recFillRegister, g_pCurInstInfo
 
 #include "common/Console.h"
@@ -367,12 +368,48 @@ static void rpsxADDI()
 }
 #endif
 
+// Handle IOP module import table magic (HLE calls)
+// When delay slot is `addiu $zero, $zero, index` (0x2400xxxx), this may be
+// an IOP BIOS import stub. Check at compile time and emit HLE call if needed.
+static void psxRecompileIrxImport()
+{
+	u32 import_table = R3000A::irxImportTableAddr(psxpc - 4);
+	u16 index = psxRegs.code & 0xffff;
+	if (!import_table)
+		return;
+
+	const std::string libname = iopMemReadString(import_table + 12, 8);
+	irxHLE hle = R3000A::irxImportHLE(libname, index);
+
+	if (!hle)
+		return;
+
+	// Flush state and emit call to HLE function
+	iopArmFlushCode();
+	iopArmFlushPC();
+	iopArmFlushConstRegs();
+	armEmitCall((const void*)hle);
+
+	// If HLE returns non-zero, it handled the call - jump to dispatcher
+	extern const void* iopDispatcherReg;
+	armEmitCbnz(RWRET, iopDispatcherReg);
+
+	// Conservative: invalidate const tracking after HLE call
+	g_psxHasConstReg = g_psxFlushedConstReg = 1;
+}
+
 #if ISTUB_IOP_ADDIU
 REC_FUNC(ADDIU)
 #else
 static void rpsxADDIU()
 {
-	if (!_psxRt_) return;
+	if (!_psxRt_)
+	{
+		// Check for IOP module import table magic
+		if (psxRegs.code >> 16 == 0x2400)
+			psxRecompileIrxImport();
+		return;
+	}
 	if (PSX_IS_CONST1(_psxRs_))
 	{
 		g_psxConstRegs[_psxRt_] = g_psxConstRegs[_psxRs_] + _psxImm_;
