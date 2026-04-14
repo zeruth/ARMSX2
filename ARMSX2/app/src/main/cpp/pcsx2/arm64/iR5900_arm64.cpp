@@ -886,6 +886,77 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 
 	const OPCODE& opcode = GetCurrentInstruction();
 
+	// Check for branch in delay slot - if so, skip recompiling it to avoid infinite recursion.
+	// Based on x86 JIT code by FlatOut, see https://github.com/PCSX2/pcsx2/pull/1783
+	if (delayslot)
+	{
+		bool is_branch = false;
+		switch (_Opcode_)
+		{
+			case 0:
+				switch (_Funct_)
+				{
+					case 8: // jr
+					case 9: // jalr
+						is_branch = true;
+						break;
+				}
+				break;
+			case 1:
+				switch (_Rt_)
+				{
+					case 0:  // bltz
+					case 1:  // bgez
+					case 2:  // bltzl
+					case 3:  // bgezl
+					case 0x10: // bltzal
+					case 0x11: // bgezal
+					case 0x12: // bltzall
+					case 0x13: // bgezall
+						is_branch = true;
+						break;
+				}
+				break;
+			case 2:  // j
+			case 3:  // jal
+			case 4:  // beq
+			case 5:  // bne
+			case 6:  // blez
+			case 7:  // bgtz
+			case 0x14: // beql
+			case 0x15: // bnel
+			case 0x16: // blezl
+			case 0x17: // bgtzl
+				is_branch = true;
+				break;
+			case 0x11: // COP1
+				if (_Rs_ == 8) // BC1
+				{
+					switch (_Rt_)
+					{
+						case 0: // bc1f
+						case 1: // bc1t
+						case 2: // bc1fl
+						case 3: // bc1tl
+							is_branch = true;
+							break;
+					}
+				}
+				break;
+		}
+		if (is_branch)
+		{
+			DevCon.Warning("Branch %08x in delay slot!", cpuRegs.code);
+			pc += 4;
+			g_cpuFlushedPC = false;
+			g_cpuFlushedCode = false;
+			g_recompilingDelaySlot = false;
+			cpuRegs.code = old_code;
+			g_pCurInstInfo = old_inst_info;
+			return;
+		}
+	}
+
 	// NOP check
 	if (cpuRegs.code == 0x00000000)
 	{

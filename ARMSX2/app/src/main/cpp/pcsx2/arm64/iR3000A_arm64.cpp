@@ -87,7 +87,7 @@ static bool g_psxFlushedPC, g_psxFlushedCode;
 // ============================================================================
 
 static const void* iopDispatcherEvent = nullptr;
-static const void* iopDispatcherReg = nullptr;
+const void* iopDispatcherReg = nullptr;  // Non-static: accessed by iR3000Atables_arm64.cpp
 static const void* iopJITCompile = nullptr;
 static const void* iopEnterRecompiledCode = nullptr;
 static const void* iopExitRecompiledCode = nullptr;

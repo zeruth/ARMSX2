@@ -196,8 +196,10 @@ _vifT void vifUnpackSetup(const u32 *data) {
 	vifX.usn   = (vifXRegs.code >> 14) & 0x01;
 	int vifNum = (vifXRegs.code >> 16) & 0xff;
 
+	// VIF0 reports raw NUM from code (0-255), VIF1 reports expanded NUM (0 means 256)
+	// But internal calculations always use expanded value
+	vifXRegs.num = (idx && vifNum == 0) ? 256 : vifNum;
 	if (vifNum == 0) vifNum = 256;
-	vifXRegs.num =  vifNum;
 
 	// This is for use when XGKick is synced as VIF can overwrite XG Kick data as it's transferring out
 	// Test with Aggressive Inline Skating, or K-1 Premium 2005 Dynamite!
