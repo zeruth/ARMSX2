@@ -214,6 +214,8 @@ void recMTC0()
 				armAsm->Mov(RSCRATCHGPR, (u64)(uintptr_t)COP0_UpdatePCCR);
 				armAsm->Blr(RSCRATCHGPR);
 				armLoadGPR32(RWSCRATCH, _Rt_);
+				// Only bits 1-9, 11-19, and 31 are writable
+				armAsm->And(RWSCRATCH, RWSCRATCH, 0x800FFBFE);
 				armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, PERF_OFFSET + offsetof(PERFregs, n.pccr)));
 				armAsm->Mov(RSCRATCHGPR, (u64)(uintptr_t)COP0_DiagnosticPCCR);
 				armAsm->Blr(RSCRATCHGPR);

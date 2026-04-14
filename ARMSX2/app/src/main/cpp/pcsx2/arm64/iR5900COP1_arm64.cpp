@@ -160,21 +160,24 @@ void recCFC1()
 		return;
 
 	armDelConstReg(_Rt_);
-	if (_Fs_cop1_ == 31)
+	// PS2 EE FPU control register read behavior:
+	// FCR0-15: all return FCR0 value (0x2E30 = implementation/revision)
+	// FCR16-31: all mirror FCR31, masked and with forced bits
+	if (_Fs_cop1_ >= 16)
 	{
+		// Load FCR31, apply read mask, set forced bits
+		constexpr u32 FCR31_READ_MASK = 0x0083C078;
+		constexpr u32 FCR31_FORCED_BITS = 0x01000001;
 		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
+		armAsm->And(RWSCRATCH, RWSCRATCH, FCR31_READ_MASK);
+		armAsm->Orr(RWSCRATCH, RWSCRATCH, FCR31_FORCED_BITS);
 		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
-	}
-	else if (_Fs_cop1_ == 0)
-	{
-		// FCR0 = revision register, always 0x2E00
-		armAsm->Mov(RSCRATCHGPR, (u64)0x2E00);
-		armAsm->Str(RSCRATCHGPR, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
 	}
 	else
 	{
-		// All other control registers read as 0
-		armAsm->Str(a64::xzr, a64::MemOperand(RCPUSTATE, GPR_OFFSET(_Rt_)));
+		// FCR0-15 all return fprc[0] (implementation/revision register)
+		armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(0)));
+		armStoreGPR64SignExt32(RWSCRATCH, _Rt_);
 	}
 }
 #endif
@@ -192,6 +195,7 @@ void recCTC1()
 	if (_Fs_cop1_ != 31)
 		return;
 
+	// Store raw value; masking happens on read (CFC1)
 	armLoadGPR32(RWSCRATCH, _Rt_);
 	armAsm->Str(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
 }
@@ -635,17 +639,36 @@ void recC_F()
 #endif
 
 // ---- C_EQ / C_LT / C_LE ----
+// PS2 FPU comparison: denormals flush to 0, compare as ordered integers.
+// Uses sign-magnitude to two's complement conversion for correct float ordering.
 static void armFpuCompare(a64::Condition cond)
 {
+	const a64::Register wzr = a64::WRegister(31);
+
+	// Load fs and convert to comparison key
 	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Fs_cop1_)));
-	armFpuClampInput(RWSCRATCH, RFSCRATCH0);
+	armAsm->Ubfx(RWARG3, RWSCRATCH, 23, 8);           // RWARG3 = exponent (save for later)
+	armAsm->Mov(RWSCRATCH3, 0x80000000u);
+	armAsm->Sub(RWSCRATCH3, RWSCRATCH3, RWSCRATCH);   // RWSCRATCH3 = 0x80000000 - fs
+	armAsm->Tst(RWSCRATCH, 0x80000000u);              // test sign bit of original
+	armAsm->Csel(RWSCRATCH, RWSCRATCH3, RWSCRATCH, a64::ne); // if negative, use converted
+	armAsm->Cmp(RWARG3, 0);                           // check saved exponent
+	armAsm->Csel(RWSCRATCH, wzr, RWSCRATCH, a64::eq); // if denormal, result = 0
+
+	// Load ft and convert to comparison key
 	armAsm->Ldr(RWSCRATCH2, a64::MemOperand(RCPUSTATE, FPR_OFFSET(_Ft_cop1_)));
-	armFpuClampInput(RWSCRATCH2, RFSCRATCH1);
-	armAsm->Fcmp(RFSCRATCH0, RFSCRATCH1);
+	armAsm->Ubfx(RWARG3, RWSCRATCH2, 23, 8);
+	armAsm->Mov(RWSCRATCH3, 0x80000000u);
+	armAsm->Sub(RWSCRATCH3, RWSCRATCH3, RWSCRATCH2);
+	armAsm->Tst(RWSCRATCH2, 0x80000000u);
+	armAsm->Csel(RWSCRATCH2, RWSCRATCH3, RWSCRATCH2, a64::ne);
+	armAsm->Cmp(RWARG3, 0);
+	armAsm->Csel(RWSCRATCH2, wzr, RWSCRATCH2, a64::eq);
+
+	// Compare as signed integers and set flag
+	armAsm->Cmp(RWSCRATCH, RWSCRATCH2);
 	armAsm->Ldr(RWSCRATCH, a64::MemOperand(RCPUSTATE, FPRC_OFFSET(31)));
-	// Bic clears PS2_FPU_FLAG_C (0x00800000 is valid logical immediate; ~C is not).
 	armAsm->Bic(RWSCRATCH, RWSCRATCH, PS2_FPU_FLAG_C);
-	// Cset → 0 or 1, then Lsl(23) → 0 or PS2_FPU_FLAG_C.
 	armAsm->Cset(RWSCRATCH2, cond);
 	armAsm->Lsl(RWSCRATCH2, RWSCRATCH2, 23);
 	armAsm->Orr(RWSCRATCH, RWSCRATCH, RWSCRATCH2);
@@ -661,13 +684,13 @@ void recC_EQ() { armFpuCompare(a64::eq); }
 #if ISTUB_C_LT
 void recC_LT() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::C_LT); }
 #else
-void recC_LT() { armFpuCompare(a64::mi); }
+void recC_LT() { armFpuCompare(a64::lt); }
 #endif
 
 #if ISTUB_C_LE
 void recC_LE() { armCallInterpreter(R5900::Interpreter::OpcodeImpl::COP1::C_LE); }
 #else
-void recC_LE() { armFpuCompare(a64::ls); }
+void recC_LE() { armFpuCompare(a64::le); }
 #endif
 
 // ---- CVT_S ----

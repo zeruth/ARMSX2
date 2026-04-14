@@ -1064,7 +1064,8 @@ static void nativeMTC0()
 			{
 				if (0 != (_Imm_ & 0x3E)) break;
 				COP0_UpdatePCCR();
-				cpuRegs.PERF.n.pccr.val = cpuRegs.GPR.r[_Rt_].UL[0];
+				// Only bits 1-9, 11-19, and 31 are writable
+				cpuRegs.PERF.n.pccr.val = cpuRegs.GPR.r[_Rt_].UL[0] & 0x800FFBFE;
 				COP0_DiagnosticPCCR();
 			}
 			else if (0 == (_Imm_ & 2))
