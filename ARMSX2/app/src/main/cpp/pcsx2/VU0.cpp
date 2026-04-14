@@ -146,18 +146,27 @@ void CFC2() {
 
 	if (_Rt_ == 0) return;
 
-	if (_Fs_ == REG_R)
-		cpuRegs.GPR.r[_Rt_].UL[0] = VU0.VI[REG_R].UL & 0x7FFFFF;
-	else
-	{
-		cpuRegs.GPR.r[_Rt_].UL[0] = VU0.VI[_Fs_].UL;
-
-		if (VU0.VI[_Fs_].UL & 0x80000000)
-			cpuRegs.GPR.r[_Rt_].UL[1] = 0xffffffff;
-		else
-			cpuRegs.GPR.r[_Rt_].UL[1] = 0;
+	u32 value;
+	switch (_Fs_) {
+		case REG_R:
+			value = VU0.VI[REG_R].UL & 0x7FFFFF;
+			break;
+		case 19: // reserved, aliased to FCR0
+			value = fpuRegs.fprc[0];
+			break;
+		case 24: // reserved, aliased to FBRST
+			value = VU0.VI[REG_FBRST].UL;
+			break;
+		default:
+			value = VU0.VI[_Fs_].UL;
+			break;
 	}
 
+	cpuRegs.GPR.r[_Rt_].UL[0] = value;
+	if (value & 0x80000000)
+		cpuRegs.GPR.r[_Rt_].UL[1] = 0xffffffff;
+	else
+		cpuRegs.GPR.r[_Rt_].UL[1] = 0;
 }
 
 void CTC2() {
@@ -173,35 +182,52 @@ void CTC2() {
 		case REG_MAC_FLAG: // read-only
 		case REG_TPC:      // read-only
 		case REG_VPU_STAT: // read-only
+		case 19: // reserved (aliased to FCR0 for reads, writes ignored)
+		case 23: // reserved (REG_P in micromode only)
+		case 25: // reserved
+		case 30: // reserved
+			break;
+		case 24: // reserved, aliased to FBRST
+			VU0.VI[REG_FBRST].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0x0C0C;
+			break;
+		case REG_STATUS_FLAG:
+			// Only bits 11:6 are writable, bits 5:0 are sticky
+			VU0.VI[REG_STATUS_FLAG].UL = (VU0.VI[REG_STATUS_FLAG].UL & 0x3F) |
+			                             (cpuRegs.GPR.r[_Rt_].UL[0] & 0xFC0);
 			break;
 		case REG_R:
 			VU0.VI[REG_R].UL = ((cpuRegs.GPR.r[_Rt_].UL[0] & 0x7FFFFF) | 0x3F800000);
 			break;
 		case REG_FBRST:
 			VU0.VI[REG_FBRST].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0x0C0C;
-			if (cpuRegs.GPR.r[_Rt_].UL[0] & 0x1) { // VU0 Force Break
-				Console.Error("fixme: VU0 Force Break");
-			}
+			// Force Break (bits 0 and 8) - ignored, matching x86 behavior
 			if (cpuRegs.GPR.r[_Rt_].UL[0] & 0x2) { // VU0 Reset
-				//Console.WriteLn("fixme: VU0 Reset");
 				vu0ResetRegs();
 			}
-			if (cpuRegs.GPR.r[_Rt_].UL[0] & 0x100) { // VU1 Force Break
-				Console.Error("fixme: VU1 Force Break");
-			}
 			if (cpuRegs.GPR.r[_Rt_].UL[0] & 0x200) { // VU1 Reset
-//				Console.WriteLn("fixme: VU1 Reset");
 				vu1ResetRegs();
 			}
 			break;
-		case REG_CMSAR1: // REG_CMSAR1
+		case REG_CMSAR0:
+			VU0.VI[REG_CMSAR0].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFF;
+			break;
+		case REG_CMSAR1:
+			VU0.VI[REG_CMSAR1].UL = cpuRegs.GPR.r[_Rt_].US[0];
 			vu1Finish(true);
 			vu1ExecMicro(cpuRegs.GPR.r[_Rt_].US[0]);	// Execute VU1 Micro SubRoutine
 			break;
 		case REG_CLIP_FLAG:
-			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0];
-		default:
+			VU0.VI[REG_CLIP_FLAG].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFFFF;
+			VU0.clipflag = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFFFF;
+			break;
+		case REG_I:
+		case REG_Q:
 			VU0.VI[_Fs_].UL = cpuRegs.GPR.r[_Rt_].UL[0];
+			break;
+		default:
+			// Integer registers vi01-vi15 are 16-bit
+			if (_Fs_ < REG_STATUS_FLAG)
+				VU0.VI[_Fs_].UL = cpuRegs.GPR.r[_Rt_].UL[0] & 0xFFFF;
 			break;
 	}
 }
