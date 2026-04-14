@@ -1274,12 +1274,16 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 			s_elf_override = filename;
 			return true;
 		}
-		else
+		else if (IsDiscFileName(filename))
 		{
-			// TODO: Maybe we should check if it's a valid iso here...
 			CDVDsys_SetFile(CDVD_SourceType::Iso, filename);
 			CDVDsys_ChangeSource(CDVD_SourceType::Iso);
 			return true;
+		}
+		else
+		{
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "Unrecognized file type: '{}'"), Path::GetFileName(filename));
+			return false;
 		}
 	}
 	else
