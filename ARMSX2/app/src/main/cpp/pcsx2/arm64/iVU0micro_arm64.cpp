@@ -126,6 +126,16 @@ static u8* s_code_write = nullptr;
 static u8* s_code_end   = nullptr;
 static ArmConstantPool s_pool;
 
+// Cycle limit for the current recArmVU0::Execute call. Set to
+// `startcycles + cycles` at the top of Execute; read at every linkEntry by
+// the inlined cycle-budget check so linked blocks yield back to the outer
+// dispatch loop when the budget is exhausted. Without this, tight VU0
+// loops that conditionally-link back to themselves (IBxx loop:) — or any
+// chain of blocks with no ebit/MFLAGSET inside — never return to Execute
+// and hang the emulator. VU0 is single-thread (always EE), so no atomicity
+// is required. Mirrors s_vu1_cycle_limit in iVU1micro_arm64.cpp.
+static u64 s_vu0_cycle_limit = 0;
+
 // ============================================================================
 //  Branch opcode classifiers (VU instruction encoding identical to VU1).
 // ============================================================================
@@ -688,15 +698,6 @@ static u8* CompileBlock(u32 startPC, u32 numPairs, VU0BlockEntry* out_block)
 	armAsm->Mov(x29, sp);
 	armMoveAddressToReg(VU0_BASE_REG, &VU0);
 
-	// Block-linking entry point. Linked predecessors B here directly,
-	// skipping the prologue (their callee-saves are already saved). The
-	// fall-through dispatch (codeEntry → linkEntry) handles the first
-	// entry from Execute. No entry-gate: the existing per-pair VPU_STAT /
-	// MFLAGSET check (after each non-last pair) handles intra-block
-	// termination; cycle budget is enforced by Execute's outer loop when
-	// the block returns.
-	out_block->linkEntry = armGetCurrentCodePointer();
-
 	const int64_t cycle_off    = (int64_t)offsetof(VURegs, cycle);
 	const int64_t code_off     = (int64_t)offsetof(VURegs, code);
 	const int64_t branch_off   = (int64_t)offsetof(VURegs, branch);
@@ -709,6 +710,63 @@ static u8* CompileBlock(u32 startPC, u32 numPairs, VU0BlockEntry* out_block)
 	const int64_t vpu_stat_off = (int64_t)((int64_t)offsetof(VURegs, VI) + REG_VPU_STAT * (int64_t)sizeof(REG_VI));
 	const int64_t micro_off    = (int64_t)offsetof(VURegs, Micro);
 
+	// Epilogue label — jumped to when we need early exit (linkEntry gate
+	// or per-pair VPU_STAT/MFLAGSET check). Declared before linkEntry so
+	// the gate emitted right after linkEntry can branch to it.
+	Label early_exit;
+
+	// Block-linking entry point. Linked predecessors B here directly,
+	// skipping the prologue (their callee-saves are already saved). The
+	// fall-through dispatch (codeEntry → linkEntry) also lands here.
+	out_block->linkEntry = armGetCurrentCodePointer();
+
+	// Entry-gate. Every block entry — fall-through from prologue OR direct
+	// `B` from a linked predecessor's returnExit — runs through this gate
+	// before the per-pair body. Without it, a tail-chain of VU0 blocks
+	// (canonical case: IBxx loop: with no ebit, or any closed-cycle link
+	// graph) bypasses Execute's outer while loop entirely and never yields
+	// — silent hard hang, no log. The per-pair check between pairs i and
+	// i+1 inside a block doesn't help: it doesn't fire after the LAST pair
+	// of a block, so a block that drops MFLAGSET / clears VPU_STAT on its
+	// last pair (e.g. M-bit fallback to vu0Exec) tail-chains anyway.
+	//
+	// Three failure modes branch to early_exit (epilogue → Ret to Execute):
+	//   1. Cycle budget exhausted (cycle >= s_vu0_cycle_limit).
+	//   2. VU0 stopped externally (VPU_STAT bit 0 == 0 — set by FBRST reset
+	//      or by _vuFlushAll inside vu0Exec when ebit countdown hits 0).
+	//   3. M-bit pending (flags bit VUFLAG_MFLAGSET — set inline by the JIT
+	//      M-bit path or by vu0Exec on M-bit fallback).
+	//
+	// VUSyncHack / FullVU0SyncHack honoring: when either is set, fire the
+	// gate if the upcoming block WOULD overshoot the limit (current +
+	// numPairs >= limit) instead of only when we already have. Mirrors
+	// x86 microVU_Branch.inl:116/243/252 and our VU1 gate (iVU1micro
+	// linkEntry block at line ~3735). numPairs <= VU0_MAX_BLOCK_PAIRS is
+	// well within Add's 12-bit immediate range.
+	{
+		const bool tight_sync = EmuConfig.Gamefixes.VUSyncHack
+		                     || EmuConfig.Gamefixes.FullVU0SyncHack;
+
+		// 1. Cycle budget.
+		armMoveAddressToReg(x5, &s_vu0_cycle_limit);
+		armAsm->Ldr(x5, MemOperand(x5));
+		armAsm->Ldr(x4, MemOperand(VU0_BASE_REG, cycle_off));
+		if (tight_sync)
+		{
+			armAsm->Add(x4, x4, numPairs);
+		}
+		armAsm->Cmp(x4, x5);
+		armAsm->B(&early_exit, hs);
+
+		// 2. VU0 stopped (VPU_STAT bit 0 == 0).
+		armAsm->Ldr(w4, MemOperand(VU0_BASE_REG, vpu_stat_off));
+		armAsm->Tbz(w4, 0, &early_exit);
+
+		// 3. M-bit pending (VUFLAG_MFLAGSET = 1 << 1).
+		armAsm->Ldr(w4, MemOperand(VU0_BASE_REG, flags_off));
+		armAsm->Tbnz(w4, 1, &early_exit);
+	}
+
 	// IbitHack forces per-op immediate decode from live micro memory (mirrors
 	// x86 microVU's ptr32[&curI] reads). When on, VU->code is loaded from
 	// VU->Micro[pc] at runtime instead of the JIT-baked instruction word so
@@ -716,9 +774,6 @@ static u8* CompileBlock(u32 startPC, u32 numPairs, VU0BlockEntry* out_block)
 	// Natively-emitted IADDI/IADDIU/ISUBIU consult EmuConfig directly and emit
 	// runtime-decode paths of their own.
 	const bool use_ibit_hack = EmuConfig.Gamefixes.IbitHack;
-
-	// Epilogue label — jumped to when we need early exit mid-block
-	Label early_exit;
 
 	// Tracks whether the previous pair executed a branch op — feeds the
 	// "is this pair a branch delay slot?" predicate for D/T bit suppression.
@@ -1190,6 +1245,11 @@ void recArmVU0::Execute(u32 cycles)
 	VU0.VI[REG_TPC].UL <<= 3;
 	VU0.flags &= ~VUFLAG_MFLAGSET;
 	const u64 startcycles = VU0.cycle;
+	// Publish the cycle limit for the per-linkEntry budget check. Must be
+	// set BEFORE the first block runs on this Execute call — without it,
+	// any tail-chain of linked VU0 blocks bypasses this while-loop's cycle
+	// check and runs forever. Mirrors recArmVU1::Execute.
+	s_vu0_cycle_limit = startcycles + cycles;
 
 	while ((VU0.cycle - startcycles) < cycles)
 	{
